@@ -1,8 +1,8 @@
 # Vendored Zeron crates
 
 Source: `zeronsh/zeron` (https://github.com/zeronsh/zeron.git), MIT.
-Pinned tag: `zeron/v0.2.113` — see `git tag -l "zeron/*"` for every
-fetched upstream release.
+Pinned: upstream `main` @ `3b2f7802` (past `v0.2.113`). Release tags are
+fetched as `zeron/v*`; track `main` by syncing `zeron-upstream/main`.
 
 ## How the vendor link works
 
