@@ -31,7 +31,14 @@ them using the patch list below as the spec of intent.
 
 | # | File | Change | Why |
 |---|------|--------|-----|
-| — | — | none yet | — |
+| 1 | `apps/zeron/Cargo.toml`, window app id | binary + AppUserModelID renamed to `mimieyes` | must not merge with the real Zeron on the taskbar / in install dirs |
+| 2 | `crates/ui` sidebar (new `hz_tree.rs` + small hooks) | Tree sidebar view: machines → spaces → chats, foldable | product feature #1 |
+| 3 | `crates/ui` shell/transcript area (new `hz_split.rs` + small hooks) | Split-pane mode: a space's chats side by side | product feature #2 |
+
+Patches 2-3 are planned, not yet applied — port the equivalents
+(`vendor/zeron/ui/src/shell/hz_tabs.rs` and friends) from HerdrGui,
+adapted to Zeron's own space/chat model instead of Herdr's
+workspace/tab/pane model.
 
 ## Patch discipline
 
