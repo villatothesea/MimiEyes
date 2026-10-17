@@ -1,5 +1,5 @@
-# vendor-sync.ps1 <upstream-tag>   e.g.  tools/vendor-sync.ps1 v0.2.114
-# Moves vendor-zeron to the tag and subtree-merges it into the current branch.
+# vendor-sync.ps1 <ref>   e.g.  tools/vendor-sync.ps1 v0.2.114   or   tools/vendor-sync.ps1 main
+# Moves vendor-zeron to the ref and subtree-merges it into the current branch.
 param(
     [Parameter(Mandatory = $true)][string]$Tag
 )
@@ -7,13 +7,13 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-Location (git rev-parse --show-toplevel)
 
-$tag = "zeron/$Tag"
+$tag = if ($Tag -eq 'main') { 'zeron-upstream/main' } else { "zeron/$Tag" }
 
-# 1. Fetch namespaced upstream tags (github first, local mirror as fallback).
+# 1. Fetch namespaced upstream tags + main (github first, local mirror as fallback).
 $remotes = @('zeron-upstream', 'D:\MyWords\VibeCoding\Assets\zeron')
 $fetched = $false
 foreach ($remote in $remotes) {
-    git fetch $remote "+refs/tags/*:refs/tags/zeron/*" --no-tags 2>$null
+    git fetch $remote "+refs/tags/*:refs/tags/zeron/*" "main" 2>$null
     if ($LASTEXITCODE -eq 0) { $fetched = $true; break }
 }
 if (-not $fetched) { throw "could not fetch upstream tags from any remote" }
