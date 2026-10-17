@@ -713,6 +713,23 @@ pub fn default_registry() -> HarnessRegistry {
         Box::new(|| zeron_harness::PiHarness::new().installed()),
         Box::new(|| Ok(Arc::new(zeron_harness::PiHarness::new()) as Arc<dyn Harness>)),
     );
+    // hz: the PiRustDurable port — same native JSONL RPC driver, resolving
+    // the `pirust` executable instead of `pi`. Registered as its own id so
+    // the two installs can coexist in pickers and settings.
+    registry.register_lazy(
+        HarnessDescriptor {
+            id: HarnessId::Pirust,
+            name: "Pirust".into(),
+            supports_steering: true,
+            steering_mode: SteeringMode::StepBoundary,
+            reasoning_levels: Vec::new(),
+            installed: true,
+            can_install: false,
+            enabled: None,
+        },
+        Box::new(|| zeron_harness::PiHarness::pirust().installed()),
+        Box::new(|| Ok(Arc::new(zeron_harness::PiHarness::pirust()) as Arc<dyn Harness>)),
+    );
     // opencode over its NATIVE HTTP/SSE protocol (the one the opencode
     // desktop app speaks — `opencode serve` + the /global/event bus), same
     // lazy pattern: the static descriptor mirrors OpencodeHarness exactly.

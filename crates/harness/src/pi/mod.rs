@@ -26,6 +26,12 @@ use tokio::{
 use zeron_proto::{AgentEvent, HarnessId, Model, ReasoningLevel, RunRequest, SteeringMode};
 
 pub struct PiHarness {
+    // hz: which executable+id this Pi-protocol instance drives — the Pi
+    // coding agent (`pi`) or the PiRustDurable port (`pirust`); both speak
+    // the same JSONL RPC wire, so every transport path is shared.
+    harness_id: HarnessId,
+    exe_name: &'static str,
+    exe_env: &'static str,
     models_cache: crate::catalog::Catalog,
     workspace_commands: crate::skills::CommandDiscovery,
     session_store: Option<PathBuf>,
@@ -37,6 +43,9 @@ pub struct PiHarness {
 impl Default for PiHarness {
     fn default() -> Self {
         Self {
+            harness_id: HarnessId::Pi,
+            exe_name: "pi",
+            exe_env: "PI_EXECUTABLE",
             executable: None,
             session_store: None,
             agent_dir: None,
@@ -50,6 +59,16 @@ impl Default for PiHarness {
 impl PiHarness {
     pub fn new() -> Self {
         Self::default()
+    }
+    // hz: the PiRustDurable port — identical protocol, separate identity so
+    // the two can sit side by side in pickers and settings.
+    pub fn pirust() -> Self {
+        Self {
+            harness_id: HarnessId::Pirust,
+            exe_name: "pirust",
+            exe_env: "PIRUST_EXECUTABLE",
+            ..Self::default()
+        }
     }
     pub fn with_executable(mut self, path: impl Into<PathBuf>) -> Self {
         self.executable = Some(path.into());
@@ -74,13 +93,13 @@ impl PiHarness {
         if let Some(path) = self
             .executable
             .clone()
-            .or_else(|| std::env::var_os("PI_EXECUTABLE").map(PathBuf::from))
+            .or_else(|| std::env::var_os(self.exe_env).map(PathBuf::from))
         {
             return crate::executable::validate_native_override(&path);
         }
         let home = crate::executable::home_or_current_dir();
         crate::executable::find_on_paths(
-            "pi",
+            self.exe_name,
             vec![
                 home.join(".local/bin/pi"),
                 home.join(".npm-global/bin/pi"),
@@ -89,9 +108,11 @@ impl PiHarness {
             ],
         )
         .ok_or_else(|| {
-            HarnessError::NotInstalled(
-                "Pi CLI: install Pi or set PI_EXECUTABLE (the pi-acp adapter is not used)".into(),
-            )
+            HarnessError::NotInstalled(format!(
+                "{} CLI: install it or set {}",
+                self.exe_name,
+                self.exe_env,
+            ))
         })
     }
     async fn probe(&self, cwd: &Path, models: bool) -> Result<Value, HarnessError> {
@@ -119,7 +140,9 @@ impl PiHarness {
         mcp: Option<&zeron_proto::McpServer>,
     ) -> Result<Process, HarnessError> {
         let exe = self.resolve_executable()?;
-        if self.executable.is_none() {
+        // hz: the 0.85.1 floor is an upstream-Pi protocol gate; the pirust
+        // port tracks its own version, so the check stays gated to `pi`.
+        if self.executable.is_none() && self.exe_name == "pi" {
             if let Some(version) = crate::executable::binary_version(&exe) {
                 if version < semver::Version::new(0, 85, 1) {
                     return Err(HarnessError::Protocol(format!(
@@ -132,8 +155,22 @@ impl PiHarness {
         // Process group plus the same env scrubbing the ACP launch applied.
         crate::process::owned::configure(&mut cmd);
         crate::compose_child_path(&mut cmd, &exe);
-        if let Some(dir) = &self.agent_dir {
-            cmd.env("PI_CODING_AGENT_DIR", dir);
+        // hz: `~/.pi/agent` is upstream-Pi territory; the port's own root is
+        // `~/.pirust/agent`, so Pirust always exports the resolved dir (the
+        // env wins over a stray inherited one). Pi keeps the legacy behavior:
+        // only an explicit override is exported.
+        match self.harness_id {
+            HarnessId::Pirust => {
+                cmd.env(
+                    "PI_CODING_AGENT_DIR",
+                    sessions::agent_dir(self.agent_dir.clone(), self.harness_id),
+                );
+            }
+            _ => {
+                if let Some(dir) = &self.agent_dir {
+                    cmd.env("PI_CODING_AGENT_DIR", dir);
+                }
+            }
         }
         cmd.args(["--mode", "rpc", "--no-themes"])
             .args(args)
@@ -250,10 +287,13 @@ fn response_data(frame: Value) -> Result<Value, HarnessError> {
 #[async_trait]
 impl Harness for PiHarness {
     fn id(&self) -> HarnessId {
-        HarnessId::Pi
+        self.harness_id
     }
     fn display_name(&self) -> &str {
-        "Pi"
+        match self.harness_id {
+            HarnessId::Pirust => "Pirust",
+            _ => "Pi",
+        }
     }
     fn supports_steering(&self) -> bool {
         true
@@ -285,9 +325,9 @@ impl Harness for PiHarness {
         Ok(self.model_catalog(false).await?.models)
     }
     fn model_context(&self) -> Result<Option<crate::ModelContext>, HarnessError> {
-        let root = sessions::agent_dir(self.agent_dir.clone());
+        let root = sessions::agent_dir(self.agent_dir.clone(), self.harness_id);
         crate::model_context::context(
-            HarnessId::Pi,
+            self.harness_id,
             &self.resolve_executable()?,
             &[root.join("models.json"), root.join("settings.json")],
         )
@@ -323,9 +363,9 @@ impl Harness for PiHarness {
         &self,
         cwd: &Path,
     ) -> Result<Option<Vec<zeron_proto::invocation::Skill>>, HarnessError> {
-        let mut skills = crate::skills::discover(HarnessId::Pi, cwd).await?;
+        let mut skills = crate::skills::discover(self.harness_id, cwd).await?;
         let commands = self.commands_for(cwd).await?;
-        crate::skills::attach_advertised_commands(HarnessId::Pi, &mut skills, &commands);
+        crate::skills::attach_advertised_commands(self.harness_id, &mut skills, &commands);
         Ok(Some(skills))
     }
     fn fallback_models(&self) -> Vec<Model> {
@@ -343,7 +383,11 @@ impl Harness for PiHarness {
         controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
         let mut request = request;
-        let store = sessions::Store::new(self.session_store.clone(), self.agent_dir.clone());
+        let store = sessions::Store::new(
+            self.session_store.clone(),
+            self.agent_dir.clone(),
+            self.harness_id,
+        );
         let mut lost_context = None;
         let args = match &request.resume {
             Some(id) => match store.resume_args(id, Path::new(&request.cwd)) {
@@ -367,8 +411,10 @@ impl Harness for PiHarness {
         let (tx, rx) = mpsc::channel(256);
         let kill_grace = self.kill_grace;
         let interrupt_grace = self.interrupt_grace;
+        let harness_id = self.harness_id;
         tokio::spawn(async move {
             let mut runner = Runner {
+                harness_id,
                 store,
                 interrupted: false,
                 extension_commands: HashSet::new(),
@@ -435,6 +481,7 @@ struct Delivery {
     queued: bool,
 }
 struct Runner {
+    harness_id: HarnessId,
     extension_commands: HashSet<String>,
     auto_compaction: bool,
     interrupted: bool,
@@ -463,7 +510,7 @@ impl Runner {
     }
     async fn started(&self, model: String) -> Result<(), HarnessError> {
         self.emit(AgentEvent::SessionStarted {
-            harness: HarnessId::Pi,
+            harness: self.harness_id,
             model,
             tools: vec![],
             cwd: self.request.cwd.clone(),

@@ -1,6 +1,7 @@
 //! Host-local UUID -> native file lookup. Never rewrite Pi's conversation files.
 use crate::HarnessError;
 use serde_json::{Value, json};
+use zeron_proto::HarnessId;
 use sha2::{Digest, Sha256};
 use std::{
     io::{BufRead, BufReader},
@@ -14,19 +15,24 @@ pub(super) struct Store {
     legacy: PathBuf,
 }
 /// Pi's settings directory: an explicit override, else `PI_CODING_AGENT_DIR`,
-/// else `~/.pi/agent`.
-pub(super) fn agent_dir(explicit: Option<PathBuf>) -> PathBuf {
+/// else `~/.pi/agent` (`~/.pirust/agent` for the Pirust id — hz: the port's
+/// own config root so the two installs never share models/sessions).
+pub(super) fn agent_dir(explicit: Option<PathBuf>, id: HarnessId) -> PathBuf {
     explicit.unwrap_or_else(|| {
+        let legacy = match id {
+            HarnessId::Pirust => ".pirust/agent",
+            _ => ".pi/agent",
+        };
         crate::model_context::root(
             "PI_CODING_AGENT_DIR",
-            crate::executable::home_or_current_dir().join(".pi/agent"),
+            crate::executable::home_or_current_dir().join(legacy),
         )
     })
 }
 impl Store {
-    pub fn new(root: Option<PathBuf>, agent: Option<PathBuf>) -> Self {
+    pub fn new(root: Option<PathBuf>, agent: Option<PathBuf>, id: HarnessId) -> Self {
         let home = crate::executable::home_or_current_dir();
-        let agent = agent_dir(agent);
+        let agent = agent_dir(agent, id);
         Self {
             root: root.unwrap_or_else(|| agent.join("zeron-sessions")),
             agent,
@@ -217,7 +223,7 @@ mod tests {
     #[test]
     fn only_proven_empty_local_sessions_can_be_recreated_and_submission_revokes_it() {
         let dir = tempfile::tempdir().unwrap();
-        let mut store = Store::new(Some(dir.path().join("index")), None);
+        let mut store = Store::new(Some(dir.path().join("index")), None, HarnessId::Pi);
         store.agent = dir.path().join("agent");
         store.legacy = dir.path().join("legacy.json");
         let file = dir.path().join("session.jsonl");
@@ -263,7 +269,7 @@ mod tests {
         let cwd = dir.path().join("project");
         std::fs::create_dir_all(&agent).unwrap();
         std::fs::create_dir_all(cwd.join(".pi")).unwrap();
-        let store = Store::new(Some(dir.path().join("index")), Some(agent.clone()));
+        let store = Store::new(Some(dir.path().join("index")), Some(agent.clone()), HarnessId::Pi);
         assert!(!store.steering_mode_configured(&cwd));
         std::fs::write(
             agent.join("settings.json"),
@@ -289,7 +295,7 @@ mod tests {
         std::fs::write(&path, "{\"type\":\"session\",\"id\":\"old-id\"}\n").unwrap();
         // Windows expands short names and adds a verbatim prefix on canonicalization.
         let expected = path.canonicalize().unwrap();
-        let mut store = Store::new(Some(dir.path().join("index")), None);
+        let mut store = Store::new(Some(dir.path().join("index")), None, HarnessId::Pi);
         store.agent = dir.path().join("agent");
         store.legacy = dir.path().join("legacy.json");
         std::fs::write(

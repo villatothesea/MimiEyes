@@ -54,6 +54,7 @@ fn methods(id: HarnessId, platform: Platform) -> Vec<Method> {
     match id {
         Mock => vec![],
         Antigravity => vec![Archive],
+        Pirust => vec![], // hz: built from the PiRustDurable workspace, no installer
         ClaudeCode if windows => vec![PowerShell("irm https://claude.ai/install.ps1 | iex")],
         ClaudeCode => vec![Shell(
             "curl -fsSL https://claude.ai/install.sh | bash",
@@ -155,6 +156,7 @@ pub fn manual_command(id: HarnessId) -> Option<&'static str> {
         Cursor => "curl https://cursor.com/install -fsS | bash",
         Opencode => "npm install -g @opencode/cli",
         Pi => "npm install -g --ignore-scripts @earendil-works/pi-coding-agent",
+        Pirust => "cargo build --release -p pi-coding-agent (PiRustDurable workspace)",
         Grok => "npm install -g @xai-official/grok",
         Hermes => "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash",
         Devin => "curl -fsSL https://cli.devin.ai/install.sh | bash",
@@ -170,6 +172,7 @@ fn cli_and_dir(id: HarnessId) -> (&'static str, &'static str) {
         Cursor => ("cursor-agent", "~/.local/bin or ~/.cursor/bin"),
         Opencode => ("opencode", "~/.opencode/bin or the npm global bin"),
         Pi => ("pi", "the npm global bin"),
+        Pirust => ("pirust", "the PiRustDurable target dir"),
         Grok => ("grok", "~/.grok/bin or the npm global bin"),
         Hermes => ("hermes", "~/.local/bin or ~/.hermes/bin"),
         Devin => ("devin", "~/.local/bin"),
@@ -186,6 +189,7 @@ pub fn installed(id: HarnessId) -> bool {
         Cursor => crate::CursorHarness::new().installed(),
         Opencode => crate::OpencodeHarness::new().installed(),
         Pi => crate::PiHarness::new().installed(),
+        Pirust => crate::PiHarness::pirust().installed(),
         Grok => crate::AcpHarness::grok().installed(),
         Hermes => crate::AcpHarness::hermes().installed(),
         Devin => crate::AcpHarness::devin().installed(),

@@ -34,6 +34,7 @@ them using the patch list below as the spec of intent.
 | 1 | `apps/zeron/Cargo.toml`, window app id | binary + AppUserModelID renamed to `mimieyes` | must not merge with the real Zeron on the taskbar / in install dirs |
 | 2 | `crates/ui` sidebar (new `hz_tree.rs` + small hooks) | Tree sidebar view: machines → spaces → chats, foldable | product feature #1 |
 | 3 | `crates/ui` shell/transcript area (new `hz_split.rs` + small hooks) | Split-pane mode: a space's chats side by side | product feature #2 |
+| 4 | `proto`, `harness/pi`, `engine`, `ui` (`// hz:` regions) + `assets/icons/pirust-mark.svg` | `HarnessId::Pirust`: the PiRustDurable port as a first-class harness on the shared pi-rpc driver (`pirust` exe, `PIRUST_EXECUTABLE`, `~/.pirust/agent`, stepped-R mark) | run our Rust port side by side with upstream Pi |
 
 Patches 2-3 are planned, not yet applied — port the equivalents
 (`vendor/zeron/ui/src/shell/hz_tabs.rs` and friends) from HerdrGui,
