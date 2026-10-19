@@ -38,6 +38,12 @@ pub mod frost;
 mod glass;
 mod haptics;
 pub mod history;
+// hz: MimiEyes — agent-to-agent messages show their sender by name (VENDORED.md #3).
+mod hz_agent_msg;
+// hz: MimiEyes — the activity monitor's records (VENDORED.md #7).
+pub mod hz_activity;
+// hz: MimiEyes — the boot splash's animated "Just Eyes" spider (VENDORED.md #1).
+mod hz_splash;
 pub mod icons;
 pub(crate) mod image_media;
 pub(crate) mod image_viewer;
@@ -212,7 +218,13 @@ pub fn run_app(config: UiConfig) {
         appshots::set_enabled(ui_settings.appshots_enabled);
         terminal::panel::init(cx);
         app_menus::init(cx);
-        app_update::AppUpdate::init(config.boot().edge_url, data_dir.clone(), cx);
+        // hz: MimiEyes — no update checks against stock Zeron's releases: the
+        // strip would offer to replace MimiEyes with stock Zeron (VENDORED.md
+        // #8). The updater is kept; set this to true to bring it back.
+        const HZ_ZERON_UPDATES: bool = false;
+        if HZ_ZERON_UPDATES {
+            app_update::AppUpdate::init(config.boot().edge_url, data_dir.clone(), cx);
+        }
         cx.register_url_scheme("zeron").detach();
 
         let state = cx.new(|cx| {
@@ -245,7 +257,10 @@ pub fn run_app(config: UiConfig) {
         // Graceful teardown: an in-process engine drains live runs and flushes
         // doc snapshots before the process exits (remote engines outlive us).
         let quit_state = state.clone();
+        // hz: the activity monitor learns why this run ends.
+        let quit_data_dir = config.boot().data_dir;
         cx.on_app_quit(move |cx| {
+            hz_activity::note_quit(&quit_data_dir, "Quit (menu, shortcut or last window closed)");
             settings::flush(cx);
             app_update::install_on_quit(cx);
             let shutdown =
@@ -412,7 +427,8 @@ fn open_main_window(
                 // Linux/Windows `appears_transparent` hides the system titlebar
                 // for our custom-drawn chrome; harmless where unsupported.
                 titlebar: Some(TitlebarOptions {
-                    title: cfg!(target_os = "windows").then(|| "Zeron".into()),
+                    // hz: the window title ships as `MimiEyes` (VENDORED.md #1).
+                    title: cfg!(target_os = "windows").then(|| "MimiEyes".into()),
                     appears_transparent: true,
                     // Native lights are 14px tall: top 14 → center 21, matching
                     // the 38px titlebar row with 4px top-only content padding.
@@ -442,7 +458,8 @@ fn open_main_window(
                 // — if these two ever disagree, vibrancy dies on the first theme
                 // change and never comes back.
                 window_background: theme::Theme::of(cx).window_background_appearance(),
-                app_id: Some("zeron".into()),
+                // hz: the app id ships as `mimieyes` (VENDORED.md #1).
+                app_id: Some("mimieyes".into()),
                 ..Default::default()
             },
             move |window, cx| {
@@ -451,6 +468,8 @@ fn open_main_window(
                 // the subscription lives as long as the window does, and the window
                 // owns nothing that would drop it early.
                 appearance::observe_window(window, cx).detach();
+                // hz: the activity monitor learns the window was closed.
+                let close_data_dir = boot.data_dir.clone();
                 let shell = cx.new(|cx| {
                     observe_main_window_geometry(window, cx);
                     shell::Shell::new(state, boot, cx)
@@ -462,6 +481,7 @@ fn open_main_window(
                         .update(cx, |shell, cx| shell.prepare_window_close(cx))
                         .unwrap_or(true);
                     if should_close {
+                        hz_activity::note_quit(&close_data_dir, "Window closed");
                         save_window_geometry(window, false, cx);
                         settings::flush(cx);
                     }
