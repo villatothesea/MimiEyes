@@ -1,27 +1,31 @@
 # MimiEyes
 
-Zeron, kept exactly as it is — plus two UI capabilities:
+A desktop agent console built on [Zeron](https://github.com/zeronsh/zeron) —
+the same app, plus:
 
-1. **Tree sidebar** — an alternative left bar that shows machines →
-   spaces → chats as a foldable tree (multi-level, collapsible).
-2. **Split panes** — a space's chats can sit side by side in split
-   panes instead of one-at-a-time.
+- **Tree sidebar** — machines → spaces → chats as a foldable tree
+- **Split panes & tabs** — a space's chats sit side by side instead of one at a time
+- **`panes` MCP tool** — agents can see and arrange the panes
+- **Settings → Usage** — per-turn tokens grouped by project, tab, session, CLI, model
+- **Settings → Activity** — when and how each run ended (quit / killed / crashed)
+- **Pirust harness** — PiRustDurable port on the shared pi-rpc driver
+- Spider opening animation, MimiEyes identity (own data dir & IPC port)
 
-Everything else is upstream `zeronsh/zeron`, tracked live through the
-vendor branch (see `vendor/zeron/VENDORED.md`). Local changes are a
-documented patch series, not a fork that drifts.
+## Status
+
+This repository is a **release snapshot**, not the development repo.
+Source = upstream `zeronsh/zeron` @ `3b2f7802` (past `v0.2.113`, MIT)
+plus the MimiEyes patch series, minus upstream's docs, tests and
+companion apps. See `SOURCE.md` for provenance and `VENDORED.md` for
+the full patch list.
 
 ## Build
 
 ```powershell
-tools/build.ps1            # release binary at vendor/zeron/target/release/
+cargo build --release -p mimieyes     # or: tools/build.ps1
 ```
 
-## Sync upstream
+## License
 
-```powershell
-tools/vendor-sync.ps1 main      # or a release tag, e.g. v0.2.114
-```
-
-Upstream merges into `vendor/zeron` as a real three-way merge; our two
-features live in `hz_*`/marked regions so conflicts stay rare and small.
+MIT — see `LICENSE` (MimiEyes additions) and `LICENSE-zeron` (upstream,
+Copyright (c) 2026 Wing). Details in `THIRD-PARTY.md`.
