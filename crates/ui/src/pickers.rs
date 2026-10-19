@@ -3284,7 +3284,14 @@ impl Pickers {
                 // Prefer below on the new-chat canvas only when it can fit
                 // useful content. Tall drafts/attachments can put the trigger
                 // near the window bottom; retain adaptive placement there.
-                let prefer_below = below && space_below >= 180.0;
+                // hz: MimiEyes — a pane's new-session composer can sit low in
+                // a short pane: open down only where the whole card fits (or
+                // there is more room below than above), else up, where more
+                // models show (VENDORED.md #9).
+                let space_above = (f32::from(bounds.top()) - 14.0).clamp(0.0, 640.0);
+                let prefer_below = below
+                    && space_below >= 180.0
+                    && (space_below >= 360.0 || space_below >= space_above);
                 if prefer_below {
                     geometry = popover::MenuGeometry {
                         height: space_below,
@@ -6041,10 +6048,10 @@ pub(crate) fn harness_brand_icon(harness: HarnessId) -> (&'static str, Option<gp
     }
 }
 
-/// `ZERON_HARNESS=mock` (the e2e/dev rig) opts the mock harness into the UI;
-/// production launches never set it, so the mock never surfaces there.
+/// hz: `MIMIEYES_HARNESS=mock` (the e2e/dev rig) opts the mock harness into
+/// our UI — `ZERON_HARNESS` no longer reaches us (VENDORED.md #1).
 fn mock_harness_enabled() -> bool {
-    std::env::var("ZERON_HARNESS")
+    std::env::var("MIMIEYES_HARNESS")
         .ok()
         .as_deref()
         .map(str::trim)
@@ -6054,7 +6061,7 @@ fn mock_harness_enabled() -> bool {
 /// Production pickers AND chip resolution hide the mock harness — the
 /// registry always lists it, but it must never surface in real UI (neither in
 /// the picker rail nor as the eager default the chips resolve against).
-/// `ZERON_HARNESS=mock` shows it; otherwise it only remains when it's
+/// `MIMIEYES_HARNESS=mock` shows it; otherwise it only remains when it's
 /// literally all there is (a dev build with no real harness registered).
 pub fn visible_harnesses(list: &[HarnessDescriptor]) -> Vec<HarnessDescriptor> {
     visible_harnesses_impl(list, mock_harness_enabled())

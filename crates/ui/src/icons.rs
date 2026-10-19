@@ -130,6 +130,9 @@ icon_assets![
     // The changes pane's unified/split toggle: a rounded frame halved by a
     // centre rule (Solar Linear weight).
     (SPLIT_COLUMNS, "split-columns"),
+    // hz: MimiEyes — pane-menu zoom and even-out glyphs (HerdrGui's set).
+    (ZOOM_ARROWS, "zoom-arrows"),
+    (EVEN_PANES, "even-panes"),
     // Long-line wrapping toggle shared by changes and agent Markdown fences.
     (WRAP_TEXT, "wrap-text"),
     (SMARTPHONE, "smartphone"),
@@ -319,6 +322,26 @@ fn panel_frame(s: f32, color: Hsla) -> Div {
         .rounded(px((4.0 + stroke / 2.0) * s))
         .border(px(stroke * s))
         .border_color(color)
+}
+
+/// hz: a "split down" glyph — the same frame with a panel only across its
+/// bottom edge (HerdrGui's pane-menu icon).
+pub fn panel_bottom_glyph(size: f32, color: Hsla) -> Div {
+    let s = size / 24.0;
+    let panel = div()
+        .absolute()
+        .left(px(6.5 * s))
+        .right(px(6.5 * s))
+        .bottom(px(7.5 * s))
+        .h(px(4.5 * s))
+        .rounded(px(0.875 * s))
+        .bg(color);
+    div()
+        .relative()
+        .flex_none()
+        .size(px(size))
+        .child(panel_frame(s, color))
+        .child(panel)
 }
 
 /// The session card toggle: [`sidebar_glyph`]'s frame with a panel in only

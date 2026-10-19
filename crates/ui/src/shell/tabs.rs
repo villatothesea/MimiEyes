@@ -222,6 +222,8 @@ impl Shell {
         self.set_voice_stage_open(false, cx);
         self.set_route(Route::Chat, cx);
         self.focus_composer(cx);
+        // hz: re-opening the selected session still brings its pane up.
+        self.hz_note_open_chat();
         self.nav.push(NavEntry::Chat(chat_id.clone()));
         self.state
             .update(cx, |s, cx| s.select_chat(Some(chat_id), cx));
@@ -243,6 +245,8 @@ impl Shell {
         self.set_voice_stage_open(false, cx);
         self.set_route(Route::Chat, cx);
         self.focus_composer(cx);
+        // hz: the canvas (not the pane view) shows until the session mints.
+        self.hz_note_new_session();
         // Pre-hide before the selection flips so the state change can't
         // auto-create a canvas tab (the panel's observer runs on the same
         // update). The source chat's flag stays set — returning restores it.
@@ -345,6 +349,11 @@ impl Shell {
             let cluster_end =
                 self.title_bar_content_start() - TITLEBAR_IDENTITY_GAP + plus_inset - 14.0;
             (sidebar_now - 8.0).max(cluster_end)
+        } else if self.hz_mode(cx) != super::hz_tabs::HzMode::Off {
+            // hz: MimiEyes — the view-tab strip's first chip sits 2px off the
+            // sidebar seam (HerdrGui's strip); collapsed, it still clears the
+            // window-control cluster.
+            (sidebar_now + 2.0).max(self.title_bar_content_start() + plus_inset)
         } else {
             content_left
         };
@@ -604,6 +613,9 @@ impl Shell {
             )
             .when(open, |button| button.bg(crate::theme::wash(0.09)))
         });
+        // hz: MimiEyes — while the pane view runs, the view-tab strip owns
+        // the title slot (panes name their sessions on their tags).
+        let hz_strip = self.hz_titlebar_strip(&theme, cx);
         let inner = div()
             .size_full()
             .flex()
@@ -616,39 +628,44 @@ impl Shell {
             // title would sit UNDER it (both flex_none, the row overflows and
             // paint order stacks them), so it hides for the duration.
             .when(!takeover, |el| {
-                el.child(
-                    div()
-                        .min_w_0()
-                        .overflow_hidden()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(6.0))
-                        .when_some(
-                            harness.map(crate::pickers::harness_brand_icon),
-                            |el, (path, tint)| {
-                                el.child(
-                                    icon(path)
-                                        .size(px(14.0))
-                                        .flex_none()
-                                        .text_color(tint.unwrap_or(theme.text_muted)),
-                                )
-                            },
-                        )
-                        .child(
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(crate::typography::ui_rems(12.0))
-                                .font_weight(gpui::FontWeight::MEDIUM)
-                                .text_color(if on_canvas {
-                                    theme.text_muted.opacity(0.7)
-                                } else {
-                                    theme.text.opacity(0.85)
-                                })
-                                .child(title),
-                        ),
-                )
+                if let Some(hz_strip) = hz_strip {
+                    // hz: the view-tab strip takes the title's place.
+                    el.child(hz_strip)
+                } else {
+                    el.child(
+                        div()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(6.0))
+                            .when_some(
+                                harness.map(crate::pickers::harness_brand_icon),
+                                |el, (path, tint)| {
+                                    el.child(
+                                        icon(path)
+                                            .size(px(14.0))
+                                            .flex_none()
+                                            .text_color(tint.unwrap_or(theme.text_muted)),
+                                    )
+                                },
+                            )
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(crate::typography::ui_rems(12.0))
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .text_color(if on_canvas {
+                                        theme.text_muted.opacity(0.7)
+                                    } else {
+                                        theme.text.opacity(0.85)
+                                    })
+                                    .child(title),
+                            ),
+                    )
+                }
             })
             .child(div().flex_1())
             .children(session_info_toggle)

@@ -56,6 +56,12 @@ impl Shell {
     /// [`session_card_reserve`]): while the sidebar or a pane animates, the
     /// settled width would move or hide the card ahead of the column.
     fn session_info_reserve(&self, cx: &App) -> Option<f32> {
+        // hz: MimiEyes — over the pane view there is no transcript to dock
+        // beside: the card floats (opened by its toggle, dismissed by a press
+        // elsewhere) for the focused pane's session.
+        if self.hz_mode(cx) == super::hz_tabs::HzMode::Panes {
+            return None;
+        }
         let main = (self.viewport_width
             - self.sidebar_now()
             - self.right_visible_width(cx)

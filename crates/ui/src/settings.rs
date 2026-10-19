@@ -19,6 +19,10 @@ use zeron_proto::{AuthState, WorkspaceScope};
 pub mod accounts;
 pub mod appearance;
 pub mod archived;
+// hz: MimiEyes — Settings → Usage (token stats, VENDORED.md #3).
+pub mod hz_usage;
+// hz: MimiEyes — Settings → Activity (how each run ended, VENDORED.md #7).
+pub mod hz_runs;
 pub mod composer;
 pub mod devices;
 pub mod files;
@@ -868,6 +872,23 @@ pub struct UiSettings {
     /// Sidebar session filter: a space id, or `None` for "All spaces".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub space_filter: Option<String>,
+    /// hz: MimiEyes — draw the session list as a foldable devices → spaces →
+    /// sessions tree instead of the stock list (the "..." menu's "Tree
+    /// sidebar" Show toggle).
+    #[serde(default)]
+    pub sidebar_tree: bool,
+    /// hz: MimiEyes — the pane view is on (the sidebar "..." menu's
+    /// "Panes"); every project then shows its own view tabs.
+    #[serde(default)]
+    pub hz_panes: bool,
+    /// hz: MimiEyes — render-level view tabs & panes, one layout per project
+    /// (keyed by space id; `""` = sessions in no project). Local view state
+    /// only; see `shell/hz_layout.rs` and VENDORED.md #3.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub hz_layouts: std::collections::HashMap<String, crate::shell::hz_layout::HzSpaceLayout>,
+    /// hz: MimiEyes — folded keys of the tree sidebar (`dev:{id}`, `sp:{id}`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hz_tree_collapsed: Vec<String>,
     /// Custom sidebar organization, isolated between account profiles on this device.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub sidebar_sections_by_profile: HashMap<String, Vec<SidebarSection>>,
@@ -1042,6 +1063,11 @@ impl Default for UiSettings {
             last_project_action_by_space_id: std::collections::HashMap::new(),
             open_tabs: None,
             space_filter: None,
+            sidebar_tree: false, // hz:
+            hz_panes: false, // hz:
+            hz_layouts: std::collections::HashMap::new(), // hz:
+            hz_tree_collapsed: Vec::new(), // hz:
+
             sidebar_pinned_session_ids_by_profile: HashMap::new(),
             sidebar_sections_by_profile: HashMap::new(),
             tab_order: std::collections::HashMap::new(),
@@ -1695,6 +1721,11 @@ impl UiSettings {
             last_project_action_by_space_id,
             open_tabs,
             space_filter,
+            sidebar_tree, // hz:
+            hz_panes, // hz:
+            hz_layouts, // hz:
+            hz_tree_collapsed, // hz:
+
             sidebar_sections_by_profile,
             sidebar_pinned_session_ids_by_profile,
             tab_order,
@@ -2732,6 +2763,11 @@ mod tests {
             )]),
             open_tabs: Some(vec!["b".to_string(), "a".to_string()]),
             space_filter: Some("space-1".into()),
+            sidebar_tree: false, // hz:
+            hz_panes: false, // hz:
+            hz_layouts: std::collections::HashMap::new(), // hz:
+            hz_tree_collapsed: Vec::new(), // hz:
+
             sidebar_sections_by_profile: HashMap::new(),
             sidebar_pinned_session_ids_by_profile: HashMap::from([
                 (

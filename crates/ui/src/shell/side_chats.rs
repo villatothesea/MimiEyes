@@ -2,7 +2,8 @@ use super::*;
 
 pub(super) struct SideChatTab {
     pub state: Entity<AppState>,
-    transcript: Entity<Transcript>,
+    // hz: panes mount the same pair — the transcript is theirs to draw too.
+    pub(super) transcript: Entity<Transcript>,
     pub(super) composer: Entity<Composer>,
     _events: Vec<Subscription>,
 }
@@ -198,19 +199,55 @@ impl Shell {
             cx.notify();
             return;
         }
+        let tab = self.make_side_chat_tab(chat, unsaved, cx);
+        self.side_chat_seq += 1;
+        let id = self.side_chat_seq;
+        self.side_chats.insert(id, tab);
+        self.right_tabs
+            .entry(key.clone())
+            .or_default()
+            .push(RightSurface::SideChat(id));
+        self.panels
+            .update(&key, |p| p.right_active = RightSurface::SideChat(id));
+        cx.notify();
+    }
+
+    /// hz: the transcript/composer pair of one conversation, built exactly as
+    /// `open_side_chat_tab` does — hz panes mount the same pair in a slot.
+    pub(super) fn make_side_chat_tab(
+        &mut self,
+        chat: zeron_proto::Chat,
+        unsaved: bool,
+        cx: &mut Context<Self>,
+    ) -> SideChatTab {
         let chat_id = chat.id.clone();
         let parent = self.state.clone();
         let state = cx.new(|cx| AppState::side_chat_state(&parent, chat, unsaved, cx));
+        self.wrap_side_chat_tab(state, Some(chat_id), cx)
+    }
+
+    /// hz: the transcript/composer pair over an already-built `state`. With
+    /// `chat_id` it is a side chat's; without, the composer is a new-session
+    /// canvas over the state (an hz pane's draft, `AppState::hz_draft_state`).
+    pub(super) fn wrap_side_chat_tab(
+        &mut self,
+        state: Entity<AppState>,
+        chat_id: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> SideChatTab {
+        let side = chat_id.is_some();
         let transcript = cx.new(|cx| Transcript::new(state.clone(), cx));
         // Workspace file links open the editor and web links honor the
         // in-app preference, resolved in this side chat's context.
-        let links = Self::session_links(Some(chat_id), cx);
+        let links = Self::session_links(chat_id, cx);
         transcript.update(cx, |transcript, _| {
             transcript.set_workspace_link_handler(links)
         });
         let composer = cx.new(|cx| {
             let mut composer = Composer::new(state.clone(), cx);
-            composer.set_side_chat(cx);
+            if side {
+                composer.set_side_chat(cx);
+            }
             composer
         });
         let events = vec![
@@ -226,8 +263,22 @@ impl Shell {
                         // A side chat is already selected before its composer
                         // mounts, and it inherits its parent's checkout, so it
                         // never runs worktree setup of its own.
-                        ComposerEvent::NewThreadTransitionStarted
-                        | ComposerEvent::WorktreeSetup { .. } => {}
+                        ComposerEvent::NewThreadTransitionStarted => {}
+                        // hz: a pane draft is a new session: its worktree
+                        // setup reports like the main canvas's.
+                        ComposerEvent::WorktreeSetup {
+                            chat_id,
+                            setup_action,
+                            setup_error,
+                            target_device_id,
+                        } if !side => this.attach_worktree_setup(
+                            chat_id.clone(),
+                            setup_action.clone(),
+                            setup_error.clone(),
+                            target_device_id.clone(),
+                            cx,
+                        ),
+                        ComposerEvent::WorktreeSetup { .. } => {}
                         ComposerEvent::Sent {
                             chat_id,
                             message_id,
@@ -243,31 +294,20 @@ impl Shell {
                     }
                 }
             }),
-            cx.observe(&state, |this, state, cx| {
-                if state.read(cx).selected_chat.is_none() {
+            cx.observe(&state, move |this, state, cx| {
+                // hz: a pane draft has no chat by design — not a deletion.
+                if side && state.read(cx).selected_chat.is_none() {
                     this.remove_deleted_side_chats(cx);
                 }
                 cx.notify();
             }),
         ];
-        self.side_chat_seq += 1;
-        let id = self.side_chat_seq;
-        self.side_chats.insert(
-            id,
-            SideChatTab {
-                state,
-                transcript,
-                composer,
-                _events: events,
-            },
-        );
-        self.right_tabs
-            .entry(key.clone())
-            .or_default()
-            .push(RightSurface::SideChat(id));
-        self.panels
-            .update(&key, |p| p.right_active = RightSurface::SideChat(id));
-        cx.notify();
+        SideChatTab {
+            state,
+            transcript,
+            composer,
+            _events: events,
+        }
     }
 
     fn remove_deleted_side_chats(&mut self, cx: &mut Context<Self>) {

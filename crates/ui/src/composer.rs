@@ -6137,6 +6137,9 @@ pub struct Composer {
     account_usage: Entity<crate::account_usage::AccountUsage>,
     /// A side chat's composer: its footer keeps only the context ring.
     side_chat: bool,
+    /// hz: MimiEyes — a pane's composer: a side chat that still shows the
+    /// account (plan usage) ring beside the context ring.
+    hz_plan_usage: bool,
     _picker_focus: Subscription,
     _input_events: Subscription,
     _dictation_events: Subscription,
@@ -6392,6 +6395,7 @@ impl Composer {
             _pickers_observe: pickers_observe,
             account_usage,
             side_chat: false,
+            hz_plan_usage: false, // hz:
             _picker_focus: picker_focus,
             _input_events: input_events,
             _dictation_events: dictation_events,
@@ -6590,6 +6594,13 @@ impl Composer {
     /// the context ring (no checkout/ref footer, no plan usage).
     pub(crate) fn set_side_chat(&mut self, cx: &mut Context<Self>) {
         self.side_chat = true;
+        cx.notify();
+    }
+
+    /// hz: MimiEyes — a pane's composer shows the account (plan usage) ring
+    /// like the main composer, even as a side chat.
+    pub(crate) fn set_hz_plan_usage(&mut self, cx: &mut Context<Self>) {
+        self.hz_plan_usage = true;
         cx.notify();
     }
 
@@ -11601,7 +11612,8 @@ impl Render for Composer {
                     .update(cx, |pickers, cx| pickers.render_footer(cx))
             });
             if session_chrome_opacity > 0.0 {
-                let harness = (!self.side_chat)
+                // hz: a pane's composer keeps the plan-usage ring.
+                let harness = (!self.side_chat || self.hz_plan_usage)
                     .then(|| self.pickers.read(cx).resolved(cx).harness)
                     .flatten();
                 let target = {

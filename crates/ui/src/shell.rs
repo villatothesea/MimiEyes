@@ -43,6 +43,10 @@ use crate::rail;
 use crate::settings::accounts::AccountsPage;
 use crate::settings::appearance::{AppearancePage, AppearanceSettingsEvent};
 use crate::settings::archived::ArchivedPage;
+// hz: MimiEyes — Settings → Usage.
+use crate::settings::hz_usage::UsagePage;
+// hz: MimiEyes — Settings → Activity.
+use crate::settings::hz_runs::RunsPage;
 use crate::settings::devices::DevicesPage;
 use crate::settings::files::{FilesSettingsEvent, FilesSettingsPage};
 use crate::settings::harnesses::HarnessesPage;
@@ -74,6 +78,13 @@ mod command_palette;
 mod file_mutations;
 mod files_panel;
 mod harness_updates;
+// hz: MimiEyes — render-level tabs/panes (`UiSettings::hz_layouts`) and the
+// tree sidebar (`UiSettings::sidebar_tree`); view state only, VENDORED.md #2-3.
+// hz: the window's side of the agents' `panes` tool (VENDORED.md #3).
+mod hz_agent;
+pub(crate) mod hz_layout;
+mod hz_tabs;
+mod hz_tree;
 mod navigation_focus;
 #[cfg(test)]
 mod navigation_tests;
@@ -210,6 +221,8 @@ const CHAT_MENU_ROW_ARCHIVE: u8 = 2;
 const CHAT_MENU_ROW_COPY: u8 = 3;
 const CHAT_MENU_ROW_DELETE: u8 = 4;
 const CHAT_MENU_ROW_TAB: u8 = 5;
+// hz: MimiEyes — the "Open in panes" row's hover key.
+const CHAT_MENU_ROW_PANES: u8 = 9;
 
 #[derive(Clone, Copy)]
 enum TabCloseAction {
@@ -347,8 +360,8 @@ pub const TITLEBAR_IDENTITY_GAP: f32 = Theme::SPACE_MD;
 /// shift lands 6px from the top; use the same inset at the trailing edge.
 pub const TITLEBAR_ACTION_EDGE_INSET: f32 = 6.0;
 /// Width of the persistent top-left button cluster itself: a 24px sidebar
-/// trigger, an 8px group gap, then two 24px history buttons on a 2px rhythm.
-pub const CLUSTER_BUTTONS_WIDTH: f32 = 24.0 * 3.0 + TITLEBAR_GROUP_GAP + TITLEBAR_CONTROL_GAP;
+/// trigger (hz: MimiEyes has no Back/Forward buttons after it).
+pub const CLUSTER_BUTTONS_WIDTH: f32 = 24.0;
 /// Extra width consumed when the collapsed-sidebar New Session action joins
 /// the left controls as its own group.
 pub const TITLEBAR_ACTION_SLOT_WIDTH: f32 = TITLEBAR_GROUP_GAP + 24.0;
@@ -553,11 +566,16 @@ pub enum SettingsSection {
     General,
     Appshots,
     Archived,
+    /// hz: MimiEyes — tokens used, grouped by project / tab / session / CLI /
+    /// model / day.
+    Usage,
+    /// hz: MimiEyes — how each run ended (the activity monitor).
+    Activity,
 }
 
 impl SettingsSection {
     /// Sections shown in Settings. `Agents` is a legacy Accounts route alias.
-    pub const ALL: [SettingsSection; 10] = [
+    pub const ALL: [SettingsSection; 12] = [
         SettingsSection::General,
         SettingsSection::Appearance,
         SettingsSection::Notifications,
@@ -568,6 +586,8 @@ impl SettingsSection {
         SettingsSection::Files,
         SettingsSection::Appshots,
         SettingsSection::Archived,
+        SettingsSection::Usage, // hz:
+        SettingsSection::Activity, // hz:
     ];
 
     /// The former Accounts page is folded into Providers. Keep its route alias
@@ -610,6 +630,8 @@ impl SettingsSection {
             SettingsSection::General => "general",
             SettingsSection::Appshots => "appshots",
             SettingsSection::Archived => "archived",
+            SettingsSection::Usage => "usage", // hz:
+            SettingsSection::Activity => "activity", // hz:
         }
     }
 
@@ -627,6 +649,8 @@ impl SettingsSection {
             "general" | "conversations" => SettingsSection::General,
             "appshots" => SettingsSection::Appshots,
             "archived" => SettingsSection::Archived,
+            "usage" => SettingsSection::Usage, // hz:
+            "activity" => SettingsSection::Activity, // hz:
             _ => return None,
         })
     }
@@ -652,6 +676,8 @@ impl SettingsSection {
             SettingsSection::General => "General",
             SettingsSection::Appshots => "Appshots",
             SettingsSection::Archived => "Archived sessions",
+            SettingsSection::Usage => "Usage", // hz:
+            SettingsSection::Activity => "Activity", // hz:
         }
     }
 }
@@ -1464,6 +1490,8 @@ const CHAT_RENAME_REVEAL_GRACE: std::time::Duration = std::time::Duration::from_
 enum ChatRenameSurface {
     Sidebar,
     Explorer,
+    /// hz: MimiEyes — on a pane's name tag (a rename asked for from the pane).
+    HzPane,
 }
 
 /// A chat title edited in place on its row (double-click, or Rename in the
@@ -2046,6 +2074,9 @@ pub struct Shell {
     /// Surface-tab strip scroll (the strip overflows horizontally, t3
     /// ScrollArea-style; drag drop-math reads the offset back out).
     right_tab_scroll: gpui::ScrollHandle,
+    /// hz: MimiEyes — mounted pane conversations, divider drags/glows, view-tab
+    /// drags, pane/tab menus, the tab rename and tree folds (`hz_tabs.rs`).
+    hz: hz_tabs::HzUi,
     /// Chat outlet, pull request dashboard, or settings pages.
     route: Route,
     settings_focus: FocusHandle,
@@ -2067,6 +2098,10 @@ pub struct Shell {
         std::rc::Rc<std::cell::RefCell<crate::pull_request_detail::PullRequestCache>>,
     devices_page: Option<Entity<DevicesPage>>,
     archived_page: Option<Entity<ArchivedPage>>,
+    /// hz: MimiEyes — Settings → Usage.
+    usage_page: Option<Entity<UsagePage>>,
+    /// hz: MimiEyes — Settings → Activity.
+    runs_page: Option<Entity<RunsPage>>,
     appearance_page: Option<Entity<AppearancePage>>,
     files_settings_page: Option<Entity<FilesSettingsPage>>,
     notifications_page: Option<Entity<NotificationsPage>>,
@@ -2564,6 +2599,8 @@ impl Shell {
             right_tabs: std::collections::HashMap::new(),
             right_tab_drag: None,
             right_tab_scroll: gpui::ScrollHandle::new(),
+            hz: hz_tabs::HzUi::default(), // hz:
+
             route,
             settings_focus: cx.focus_handle(),
             settings_end_focus: cx.focus_handle(),
@@ -2582,6 +2619,8 @@ impl Shell {
             pull_request_cache: Default::default(),
             devices_page: None,
             archived_page: None,
+            usage_page: None, // hz:
+            runs_page: None, // hz:
             appearance_page: None,
             files_settings_page: None,
             notifications_page: None,
@@ -5511,6 +5550,11 @@ impl Shell {
                 self.set_route(Route::Chat, cx);
                 self.focus_composer(cx);
                 let target = (!chat_id.is_empty()).then_some(chat_id);
+                // hz: history back to the new-session canvas is the canvas,
+                // not an empty pane view.
+                if target.is_none() {
+                    self.hz_note_new_session();
+                }
                 if self.state.read(cx).selected_chat != target {
                     self.state.update(cx, |s, cx| s.select_chat(target, cx));
                 }
@@ -5794,6 +5838,33 @@ impl Shell {
                     None => Empty.into_any_element(),
                 }
             }
+            // hz: MimiEyes — token stats; the page gets the view tab each
+            // session is in now (only the window knows the layouts).
+            SettingsSection::Usage => {
+                if self.usage_page.is_none() {
+                    let state = self.state.clone();
+                    self.usage_page = Some(cx.new(|cx| UsagePage::new(state, cx)));
+                }
+                let tabs = self.hz_usage_tabs(cx);
+                match &self.usage_page {
+                    Some(page) => {
+                        page.update(cx, |page, _| page.set_tabs(tabs));
+                        page.clone().into_any_element()
+                    }
+                    None => Empty.into_any_element(),
+                }
+            }
+            // hz: MimiEyes — how each run ended.
+            SettingsSection::Activity => {
+                if self.runs_page.is_none() {
+                    let data_dir = self.data_dir.clone();
+                    self.runs_page = Some(cx.new(|cx| RunsPage::new(data_dir, cx)));
+                }
+                match &self.runs_page {
+                    Some(page) => page.clone().into_any_element(),
+                    None => Empty.into_any_element(),
+                }
+            }
         }
     }
 
@@ -5820,6 +5891,8 @@ impl Shell {
     /// Start editing `chat_id`'s title in place on its row: the sidebar's
     /// session row, or — for a side chat — its row under the file tree.
     fn open_rename_chat(&mut self, chat_id: String, cx: &mut Context<Self>) {
+        // hz: asked for from a pane (its tag or its menu): edit on the tag.
+        let on_pane = std::mem::take(&mut self.hz.rename_on_pane);
         self.close_chat_menu(cx);
         if self.chat_rename.is_some() {
             self.finish_rename_chat(true, cx);
@@ -5843,13 +5916,17 @@ impl Shell {
         // The sidebar lists only top-level chats; side chats live in the
         // explorer's Chats footer. Either way the row must be on screen
         // first: a field on a hidden row would take keystrokes unseen.
-        let surface = if parent.is_some() {
+        let surface = if on_pane {
+            ChatRenameSurface::HzPane // hz:
+        } else if parent.is_some() {
             ChatRenameSurface::Explorer
         } else {
             ChatRenameSurface::Sidebar
         };
         let revealed = match surface {
             ChatRenameSurface::Sidebar => self.reveal_sidebar_chat(&chat_id, cx),
+            // hz: the tag is on screen already.
+            ChatRenameSurface::HzPane => true,
             // The footer lists the open chat's live side chats; it reveals
             // the row itself once handed the rename.
             ChatRenameSurface::Explorer => {
@@ -5885,8 +5962,11 @@ impl Shell {
         // A pending composer refocus (the first click of the double-click
         // opened the chat, or a side chat's tab) must not steal the field
         // before it is typed in.
-        for composer in
-            std::iter::once(&self.composer).chain(self.side_chats.values().map(|tab| &tab.composer))
+        for composer in std::iter::once(&self.composer)
+            .chain(self.side_chats.values().map(|tab| &tab.composer))
+            // hz: pane composers too — a queued focus must not steal the
+            // rename field either.
+            .chain(self.hz.panes.values().map(|pane| &pane.tab.composer))
         {
             composer.update(cx, |composer, _| composer.focus_pending = false);
         }
@@ -7208,8 +7288,6 @@ impl Shell {
     /// through to the titlebar drag strips below.
     fn render_titlebar_cluster(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
-        let can_back = self.nav.can_back();
-        let can_forward = self.nav.can_forward();
         // The titlebar is the single owner of the new-session action in both
         // sidebar states. Hide it on the new-session canvas: opening another
         // blank canvas from an already blank canvas has no effect and used to
@@ -7298,30 +7376,8 @@ impl Shell {
                 &theme,
                 cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
             ))
-            .child(
-                div()
-                    .ml(px(TITLEBAR_GROUP_GAP))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(TITLEBAR_CONTROL_GAP))
-                    .child(nav_history_button(
-                        "nav-back",
-                        icons::ARROW_LEFT,
-                        "Back",
-                        can_back,
-                        &theme,
-                        cx.listener(|this, _, _, cx| this.navigate_back(cx)),
-                    ))
-                    .child(nav_history_button(
-                        "nav-forward",
-                        icons::ARROW_RIGHT,
-                        "Forward",
-                        can_forward,
-                        &theme,
-                        cx.listener(|this, _, _, cx| this.navigate_forward(cx)),
-                    )),
-            )
+            // hz: MimiEyes drops the Back/Forward buttons (the shortcuts
+            // still navigate); CLUSTER_BUTTONS_WIDTH shrinks to match.
             .children(show_plus.then(|| {
                 div()
                     .flex_none()
@@ -7901,6 +7957,8 @@ impl Shell {
             SettingsSection::General => icons::SETTINGS,
             SettingsSection::Appshots => icons::MONITOR,
             SettingsSection::Archived => icons::ARCHIVE_MINIMALISTIC,
+            SettingsSection::Usage => icons::FILE_DATA, // hz:
+            SettingsSection::Activity => icons::CLOCK_CIRCLE, // hz:
         };
         settings::widgets::scroll_faded(
             "settings-nav-scroll",
@@ -8937,6 +8995,11 @@ impl Shell {
     }
 
     fn render_chat_sidebar(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        // hz: the tree style swaps the session list for a foldable
+        // devices → spaces → sessions tree; same column chrome around it.
+        if self.settings.sidebar_tree {
+            return self.render_hz_tree(theme, cx);
+        }
         if self.sidebar_session_transfer.as_ref().is_some_and(|drag| {
             !cx.has_active_drag() || !self.sidebar_session_transfer_is_valid(&drag.payload, cx)
         }) {
@@ -10675,6 +10738,22 @@ impl Shell {
                         .child(self.chat_menu_hover_row(CHAT_MENU_ROW_ARCHIVE, archive, cx))
                         .child(self.chat_menu_hover_row(CHAT_MENU_ROW_COPY, copy, cx))
                 };
+                // hz: seed a view tab with the session — the pane strip
+                // appears and the chat mounts into its first slot.
+                let panes_id = chat_id.clone();
+                let panes = popover::menu_row(&theme, false, format!("chat-menu-panes-{chat_id}"))
+                    .id("chat-menu-panes")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.close_chat_menu(cx);
+                        this.hz_open_in_panes(panes_id.clone(), cx);
+                    }))
+                    .child(
+                        icon(icons::SPLIT_COLUMNS)
+                            .size(px(16.0))
+                            .text_color(theme.text_muted),
+                    )
+                    .child(SharedString::from("Open in panes"));
+                let menu = menu.child(self.chat_menu_hover_row(CHAT_MENU_ROW_PANES, panes, cx));
                 let delete = popover::menu_row(&theme, false, format!("chat-menu-delete-{chat_id}"))
                     .id("chat-menu-delete")
                     .text_color(theme.danger)
@@ -10741,6 +10820,10 @@ impl Shell {
         if let Some(menu) = self.render_pull_request_tab_menu(cx) {
             overlays.push(menu);
         }
+        // hz: the pane and view-tab context menus float over the hz view.
+        overlays.extend(self.render_hz_pane_menu(cx));
+        overlays.extend(self.render_hz_tab_menu(cx));
+        overlays.extend(self.render_hz_loose_menu(cx));
 
         overlays.extend(self.render_space_overlays(viewport, window, cx));
         overlays.extend(self.render_section_overlays(viewport, window, cx));
@@ -11002,6 +11085,12 @@ impl Shell {
         }
 
         let _ = (text, border);
+        // hz: an active view-tab's pane group takes over the conversation
+        // column; without one (or without a selected session) the stock
+        // canvas/transcript path below runs unchanged.
+        if let Some(view) = self.render_hz_view(cx) {
+            return view;
+        }
         let has_selection = self.state.read(cx).selected_chat.is_some();
         let has_spaces = !self.state.read(cx).spaces.is_empty();
         let has_appshots = !self.composer.read(cx).staged_appshots().is_empty();
@@ -13112,6 +13201,7 @@ fn linux_caption_button(
 /// A titlebar history button (zeron window-controls.tsx): enabled it is a
 /// normal window-control button; disabled it dims to 35% opacity and ignores
 /// the pointer (`disabled:pointer-events-none disabled:opacity-35`).
+#[allow(dead_code)] // hz: MimiEyes draws no Back/Forward buttons.
 fn nav_history_button(
     id: &'static str,
     icon_path: &'static str,
@@ -13215,6 +13305,9 @@ impl Render for Shell {
         }
         settings::wallpaper::preload(cx);
         self.sync_voice_stage(window, cx);
+        // hz: keep workspace/tabs/panes and the selected chat consistent
+        // before the titlebar strip and the pane view draw.
+        self.hz_sync(cx);
         self.navigation_focus
             .remember(&self.shortcut_focus, window, cx);
         if let Some(command) = self.pending_workspace_command.take() {
@@ -15068,7 +15161,8 @@ mod tests {
         assert_eq!(TITLEBAR_CONTROL_GAP, 2.0);
         assert_eq!(TITLEBAR_GROUP_GAP, Theme::SPACE_SM);
         assert_eq!(TITLEBAR_IDENTITY_GAP, Theme::SPACE_MD);
-        assert_eq!(CLUSTER_BUTTONS_WIDTH, 82.0);
+        assert_eq!(CLUSTER_BUTTONS_WIDTH, 24.0); // hz: no Back/Forward
+
         assert_eq!(TITLEBAR_ACTION_SLOT_WIDTH, 32.0);
         assert_eq!(TITLEBAR_ACTION_EDGE_INSET, 6.0);
     }
@@ -15121,12 +15215,14 @@ mod tests {
 
     #[test]
     fn cluster_clearance_clears_the_overlay_buttons() {
-        // Linux: buttons at 10..92; a 16px-padded header needs 84 more px to
-        // put content at 92 + 8 breathing room.
-        assert_eq!(cluster_clearance(false, false, 0, 16.0), 84.0);
-        assert_eq!(cluster_clearance(false, false, 0, 10.0), 90.0);
+        // Linux: buttons at 10..10+CLUSTER_BUTTONS_WIDTH; a 16px-padded
+        // header puts content past them + 8 breathing room (hz: the
+        // cluster is just the sidebar toggle in MimiEyes).
+        let linux = 10.0 + CLUSTER_BUTTONS_WIDTH + 8.0;
+        assert_eq!(cluster_clearance(false, false, 0, 16.0), linux - 16.0);
+        assert_eq!(cluster_clearance(false, false, 0, 10.0), linux - 10.0);
         // Linux with a left-side close caption: everything shifts one slot.
-        assert_eq!(cluster_clearance(false, false, 1, 16.0), 84.0 + 26.0);
+        assert_eq!(cluster_clearance(false, false, 1, 16.0), linux - 16.0 + 26.0);
         // macOS: buttons start at the 88px traffic-light cluster start.
         assert_eq!(
             cluster_clearance(true, false, 0, 16.0),

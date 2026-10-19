@@ -2148,6 +2148,11 @@ enum SidebarViewRow {
     ShowHarness,
     ShowProjectFilter,
     ShowArchived,
+    // hz: MimiEyes — the foldable devices → spaces → sessions sidebar.
+    TreeSidebar,
+    // hz: MimiEyes — pane view (the view-tab strip) for this space; a root
+    // row like Compact, not a Show submenu entry.
+    Panes,
 }
 
 impl SidebarViewRow {
@@ -2162,9 +2167,10 @@ impl SidebarViewRow {
 }
 
 const SIDEBAR_VIEW_GROUPS: [(&str, std::ops::Range<usize>); 3] =
-    [("Organize", 0..3), ("Sort", 3..5), ("Show", 5..12)];
+    // hz: the "Tree sidebar" Show toggle grows the range.
+    [("Organize", 0..3), ("Sort", 3..5), ("Show", 5..13)];
 
-const SIDEBAR_VIEW_ROWS: [SidebarViewRow; 12] = [
+const SIDEBAR_VIEW_ROWS: [SidebarViewRow; 13] = [
     SidebarViewRow::ByDevice,
     SidebarViewRow::ByProject,
     SidebarViewRow::InOneList,
@@ -2177,6 +2183,8 @@ const SIDEBAR_VIEW_ROWS: [SidebarViewRow; 12] = [
     SidebarViewRow::ShowProjectLabel,
     SidebarViewRow::ShowProjectFilter,
     SidebarViewRow::ShowArchived,
+    // hz: MimiEyes — stays a Show toggle, so it never closes the submenu.
+    SidebarViewRow::TreeSidebar,
 ];
 
 // list items stay tightly related at 2px, while section boundaries use 12px
@@ -2831,6 +2839,8 @@ impl Shell {
         self.cancel_pinned_session_drag(cx);
         self.set_route(Route::Chat, cx);
         self.focus_composer(cx);
+        // hz: the canvas (not the pane view) shows until the session mints.
+        self.hz_note_new_session();
         // "All" stays as-is; an explicit project filter follows the new
         // project so the first send lands in a visible session.
         if self.settings.space_filter.is_some() {
@@ -3870,6 +3880,11 @@ impl Shell {
                     self.set_space_filter(None, cx);
                 }
             }
+            // hz: MimiEyes — the list renders as a foldable tree instead.
+            SidebarViewRow::TreeSidebar => self.settings.sidebar_tree = !self.settings.sidebar_tree,
+            // hz: MimiEyes — pane view for this space (creates/drops the
+            // view layout).
+            SidebarViewRow::Panes => self.hz_toggle_pane_view(cx),
         }
         self.schedule_save(cx);
         if row.closes_submenu() {
@@ -3978,8 +3993,9 @@ impl Shell {
                         delta,
                     );
                 } else {
+                    // hz: +3 root rows — Compact, Panes, Create Section.
                     menu.active =
-                        popover::menu_step(menu.active, SIDEBAR_VIEW_GROUPS.len() + 2, delta);
+                        popover::menu_step(menu.active, SIDEBAR_VIEW_GROUPS.len() + 3, delta);
                 }
                 cx.notify();
             }
@@ -3993,10 +4009,15 @@ impl Shell {
                         }
                     }
                 } else {
+                    // hz: root rows are Compact, Panes, then Create Section.
                     let group = menu.active.unwrap_or(0);
-                    if group == SIDEBAR_VIEW_GROUPS.len() + 1 {
+                    if group == SIDEBAR_VIEW_GROUPS.len() + 2 {
                         if key != "right" && !event.is_held {
                             self.open_section_dialog(None, cx);
+                        }
+                    } else if group == SIDEBAR_VIEW_GROUPS.len() + 1 {
+                        if key != "right" && !event.is_held {
+                            self.activate_sidebar_view_row(SidebarViewRow::Panes, cx);
                         }
                     } else if group == SIDEBAR_VIEW_GROUPS.len() {
                         if key != "right" && !event.is_held {
@@ -4041,6 +4062,8 @@ impl Shell {
             "Location",
             "Project filter",
             "Archived",
+            // hz: MimiEyes — the foldable devices → spaces → sessions sidebar.
+            "Tree sidebar",
         ];
         let icons = [
             icons::LAPTOP,
@@ -4056,6 +4079,8 @@ impl Shell {
             icons::REMOTE_SERVER,
             icons::FOLDER,
             icons::ARCHIVE_MINIMALISTIC,
+            // hz: MimiEyes — the foldable devices → spaces → sessions sidebar.
+            icons::FOLDER_TREE,
         ];
         let selected = [
             organization == SidebarOrganization::ByDevice,
@@ -4070,6 +4095,8 @@ impl Shell {
             self.settings.sidebar_show_project_label,
             self.settings.sidebar_show_project_filter,
             self.settings.sidebar_show_archived,
+            // hz: MimiEyes — persisted like every other Show toggle.
+            self.settings.sidebar_tree,
         ];
         let values = [
             labels[selected[..3].iter().position(|v| *v).unwrap_or(0)].to_string(),
@@ -4300,10 +4327,11 @@ impl Shell {
                 )
                 .into_any_element(),
         );
-        groups.push(popover::menu_separator().into_any_element());
+        // hz: MimiEyes — a "Panes" root toggle like Compact's: it arms the
+        // view-tab strip for this space.
         groups.push(
             div()
-                .id("sidebar-create-section-hover")
+                .id("sidebar-view-panes-hover")
                 .on_hover(cx.listener(|this, hovered: &bool, window, cx| {
                     let target = SIDEBAR_VIEW_GROUPS.len() + 1;
                     if *hovered {
@@ -4325,6 +4353,51 @@ impl Shell {
                         theme,
                         false,
                         active == Some(SIDEBAR_VIEW_GROUPS.len() + 1),
+                        "sidebar-view-panes",
+                    )
+                    .id("sidebar-view-panes")
+                    .h(px(30.0))
+                    .py(px(0.0))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.open_sidebar_view_submenu(SIDEBAR_VIEW_GROUPS.len() + 1, false, cx);
+                        this.activate_sidebar_view_row(SidebarViewRow::Panes, cx);
+                        cx.stop_propagation();
+                    }))
+                    .child(div().flex_1().child("Panes"))
+                    .child(crate::settings::widgets::toggle_switch(
+                        theme,
+                        self.hz_pane_view_enabled(),
+                        "sidebar-view-panes",
+                    )),
+                )
+                .into_any_element(),
+        );
+        groups.push(popover::menu_separator().into_any_element());
+        groups.push(
+            div()
+                .id("sidebar-create-section-hover")
+                .on_hover(cx.listener(|this, hovered: &bool, window, cx| {
+                    let target = SIDEBAR_VIEW_GROUPS.len() + 2;
+                    if *hovered {
+                        this.hover_sidebar_view_group(target, window.mouse_position(), false, cx);
+                    } else if let Some(menu) = this.sidebar_view_menu.open_mut() {
+                        menu.hover_intent.leave(&target);
+                    }
+                }))
+                .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
+                    // hz: Panes sits between Compact and Create Section.
+                    this.hover_sidebar_view_group(
+                        SIDEBAR_VIEW_GROUPS.len() + 2,
+                        event.position,
+                        true,
+                        cx,
+                    );
+                }))
+                .child(
+                    popover::menu_row_nav(
+                        theme,
+                        false,
+                        active == Some(SIDEBAR_VIEW_GROUPS.len() + 2),
                         "sidebar-create-section",
                     )
                     .id("sidebar-create-section")

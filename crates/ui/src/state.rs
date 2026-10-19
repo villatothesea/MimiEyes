@@ -2460,6 +2460,38 @@ impl AppState {
         state
     }
 
+    /// hz: MimiEyes — a pane's new-session state: the parent's rows and
+    /// engine, nothing selected (its composer is a new-session canvas, so the
+    /// first send mints a top-level chat), homed on `space` — the project the
+    /// pane's tab belongs to; `None` is the "no project" bucket.
+    pub(crate) fn hz_draft_state(
+        parent: &Entity<Self>,
+        space: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let source = parent.read(cx);
+        let engine = source.engine.clone();
+        let mut state = Self::new();
+        state.chats = source.chats.clone();
+        state.spaces = source.spaces.clone();
+        state.devices = source.devices.clone();
+        state.data_dir = source.data_dir.clone();
+        state.local_device_id = source.local_device_id.clone();
+        state.chats_synced = source.chats_synced;
+        state.spaces_synced = source.spaces_synced;
+        state.selected_space = source.selected_space.clone();
+        state.selected_device = source.selected_device.clone();
+        state.no_project = source.no_project;
+        state.auto_selected = true;
+        if let Some(engine) = engine {
+            state.attach_engine(engine, cx);
+        }
+        // `None` is Zeron's own "Don't work in a project" opt-out.
+        state.select_space(space, cx);
+        state.watch_clock_transitions(cx);
+        state
+    }
+
     /// This is a side chat's state whose chat its first send has yet to mint.
     pub(crate) fn side_chat_unsaved(&self) -> bool {
         self.unsaved_side_chat

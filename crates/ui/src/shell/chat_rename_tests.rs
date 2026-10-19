@@ -401,3 +401,24 @@ fn inline_rename_keeps_the_row_height_in_compact_and_full_rows(cx: &mut TestAppC
         assert!(shell.read_with(cx, |shell, _| shell.chat_rename.is_none()));
     }
 }
+
+// hz: MimiEyes — a rename asked for from a pane edits on the pane's tag, not
+// in the sidebar; the next plain rename is the sidebar's again.
+#[gpui::test]
+fn hz_a_rename_from_a_pane_edits_on_the_pane(cx: &mut TestAppContext) {
+    let (shell, cx) = setup(cx);
+    shell.update(cx, |shell, cx| {
+        shell.hz.rename_on_pane = true;
+        shell.open_rename_chat("older".into(), cx);
+        let rename = shell.chat_rename.as_ref().unwrap();
+        assert_eq!(rename.surface, ChatRenameSurface::HzPane);
+        assert!(shell.rename_input_for("older", ChatRenameSurface::Sidebar).is_none());
+        assert!(!shell.hz.rename_on_pane);
+        shell.finish_rename_chat(false, cx);
+        shell.open_rename_chat("older".into(), cx);
+        assert_eq!(
+            shell.chat_rename.as_ref().unwrap().surface,
+            ChatRenameSurface::Sidebar
+        );
+    });
+}
