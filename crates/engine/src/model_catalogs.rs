@@ -31,6 +31,20 @@ fn read(path: &Path, context: &ModelContext) -> Option<Vec<Model>> {
         && !saved.catalog.is_empty())
     .then_some(saved.catalog)
 }
+/// hz: MimiEyes — Claude's catalog key hashes `~/.claude/.credentials.json`,
+/// which changes on every token refresh, so the exact file is usually missing
+/// and the picker waited ~20 s on a cold `claude` probe. Claude offers the same
+/// manifest whatever the login (even logged out, see `list_inner`), so its
+/// newest saved catalog stands in while the live refresh runs (VENDORED.md #9).
+fn hz_latest_claude(path: &Path, context: &ModelContext) -> Option<Vec<Model>> {
+    std::fs::read_dir(path.parent()?)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+        .filter_map(|entry| Some((entry.metadata().ok()?.modified().ok()?, entry.path())))
+        .max_by_key(|(modified, _)| *modified)
+        .and_then(|(_, newest)| read(&newest, context))
+}
 fn save(path: &Path, context: &ModelContext, models: &[Model]) -> std::io::Result<()> {
     if models.is_empty() {
         return Ok(());
@@ -116,7 +130,12 @@ async fn list_inner(
             .map(|catalog| catalog.models);
     };
     let path = location(root, harness.as_ref(), &context);
-    let disk = read(&path, &context);
+    let disk = read(&path, &context).or_else(|| {
+        // hz: Claude's newest catalog while its exact one is not saved yet.
+        (harness.id() == zeron_proto::HarnessId::ClaudeCode)
+            .then(|| hz_latest_claude(&path, &context))
+            .flatten()
+    });
     // The refresh owns its lifetime; returning disk early must not cancel it.
     let mut refresh = tokio::spawn({
         let harness = harness.clone();
@@ -224,6 +243,21 @@ mod tests {
             reasoning_levels: vec![],
             options: vec![],
         }]
+    }
+    // hz: a credential refresh's new key falls back to Claude's newest
+    // catalog of the same binary version; nothing saved, nothing returned.
+    #[test]
+    fn hz_claude_falls_back_to_its_newest_catalog() {
+        let dir = tempfile::tempdir().unwrap();
+        let wanted = dir.path().join("new-key.json");
+        assert!(hz_latest_claude(&wanted, &context("new-key")).is_none());
+        save(&dir.path().join("old-key.json"), &context("old-key"), &models()).unwrap();
+        let other = ModelContext {
+            binary_version: Some("2.0.0".into()),
+            ..context("new-key")
+        };
+        assert_eq!(hz_latest_claude(&wanted, &context("new-key")), Some(models()));
+        assert!(hz_latest_claude(&wanted, &other).is_none());
     }
     struct Probe {
         account: std::sync::atomic::AtomicUsize,

@@ -24,6 +24,12 @@ use crate::HarnessError;
 use crate::jsonrpc::{Incoming, RpcClient};
 use crate::process::{Command, Stdio};
 
+/// hz: MimiEyes — how long a run waits for Devin to advertise the requested
+/// model (stock: the shared 10 s discovery timeout). On a slow network Devin's
+/// account-catalog refresh takes longer than that, and every turn then failed
+/// with "did not advertise requested model" (VENDORED.md #8).
+const HZ_DEVIN_MODEL_WAIT: Duration = Duration::from_secs(30);
+
 /// A freshly discovered variant may also arrive after `session/new` in the
 /// process that runs the prompt. Wait for that exact id; the generic ACP
 /// family fallback could otherwise silently select a different GPT model.
@@ -67,11 +73,13 @@ pub(super) async fn wait_for_model(
             }
         }
     };
-    tokio::time::timeout(super::DEFAULT_MODEL_DISCOVERY_TIMEOUT, wait)
+    tokio::time::timeout(HZ_DEVIN_MODEL_WAIT, wait) // hz:
         .await
         .map_err(|_| {
             HarnessError::Protocol(format!(
-                "Devin did not advertise requested model {model} after refreshing"
+                "Devin did not advertise requested model {model} after refreshing \
+                 (it could not load its model list in {}s; check the network or proxy)",
+                HZ_DEVIN_MODEL_WAIT.as_secs()
             ))
         })?
 }
