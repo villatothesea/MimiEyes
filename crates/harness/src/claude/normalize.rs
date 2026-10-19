@@ -694,8 +694,12 @@ impl Normalizer {
                 if let Some(id) = &f.session_id {
                     self.session_id = Some(id.clone());
                 }
+                // hz: a turn's input is its uncached input plus what it read
+                // from and wrote to the prompt cache (Settings → Usage).
                 let usage = AgentEvent::Usage {
-                    input_tokens: f.usage.input_tokens,
+                    input_tokens: f.usage.input_tokens
+                        + f.usage.cache_read_input_tokens
+                        + f.usage.cache_creation_input_tokens,
                     output_tokens: f.usage.output_tokens,
                 };
                 let done = if f.subtype == "success" {

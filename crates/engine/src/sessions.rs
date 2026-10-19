@@ -2210,6 +2210,8 @@ async fn drive_run(
     let device_id = inner.device_id.clone();
     // Captured for post-run auto-titling (the request moves into the harness).
     let harness_id = harness.id();
+    // hz: the model each turn's tokens are booked under (Settings → Usage).
+    let usage_model = request.model.clone();
     let user_prompt = request.prompt.clone();
     let run_cwd = request.cwd.clone();
     if request.resume.is_none() {
@@ -2948,6 +2950,21 @@ async fn drive_run(
                 );
                 continue;
             }
+        }
+        // hz: MimiEyes books every turn's tokens (stock drops them).
+        if let AgentEvent::Usage {
+            input_tokens,
+            output_tokens,
+        } = &event
+        {
+            crate::hz_usage::record(
+                &chat_id,
+                &device_id,
+                harness_id,
+                usage_model.as_deref(),
+                *input_tokens,
+                *output_tokens,
+            );
         }
         // Capacity/occupancy can settle after Done; updating it must not reopen a turn.
         if let AgentEvent::ContextUsage { tokens, window } = &event {
