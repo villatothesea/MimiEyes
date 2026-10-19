@@ -701,6 +701,8 @@ pub struct EngineRpc {
     harness_updates: Option<crate::harness_updates::HarnessUpdateCoordinator>,
     local_import: Option<crate::local_import::LocalImporter>,
     engine_info: EngineInfo,
+    /// hz: MimiEyes — agents' pane requests, relayed to the window.
+    hz_relay: crate::hz_relay::HzRelay,
 }
 
 impl EngineRpc {
@@ -724,7 +726,12 @@ impl EngineRpc {
             device_id: doc_host.device_id().to_string(),
             workspace_scope,
             cursor_sdk_version: Some(zeron_harness::CursorHarness::sdk_version().into()),
-            capabilities: zeron_proto::capabilities::current(),
+            capabilities: {
+                let mut capabilities = zeron_proto::capabilities::current();
+                // hz: MimiEyes — this engine relays agents' `panes` requests.
+                capabilities.push(crate::hz_relay::HZ_RELAY_CAPABILITY.to_owned());
+                capabilities
+            },
         };
         let github = GitHubCli::new().with_store(repos.data_dir());
         Self {
@@ -749,6 +756,7 @@ impl EngineRpc {
             harness_updates: None,
             local_import: None,
             engine_info,
+            hz_relay: Default::default(), // hz:
         }
     }
 
@@ -1887,6 +1895,14 @@ impl RpcService for EngineRpc {
             return AuthRpc::new(self.auth()?.clone())
                 .handle(method, params)
                 .await;
+        }
+        // hz: MimiEyes — the `panes` tool's relay to the window.
+        if crate::hz_relay::HzRelay::handles(method) {
+            return self.hz_relay.handle(method, params).await;
+        }
+        // hz: MimiEyes — the token ledger for Settings → Usage.
+        if crate::hz_usage::handles(method) {
+            return crate::hz_usage::handle(params).await;
         }
         match method {
             methods::ENGINE_INFO => RpcReply::value(&self.engine_info),

@@ -245,6 +245,8 @@ fn catalog() -> Vec<ToolDef> {
             "required": ["script", "title"]
         }),
     });
+    // hz: MimiEyes — an agent lays out its project's view tabs and panes.
+    tools.push(crate::hz_panes::tool());
     tools
 }
 
@@ -666,7 +668,8 @@ impl Tools {
         let in_chat = self.zeron.origin().chat_id.is_some();
         catalog()
             .into_iter()
-            .filter(|tool| in_chat || tool.name != SHOW_VISUAL)
+            // hz: `panes` acts for the calling chat's project, like show_visual.
+            .filter(|tool| in_chat || (tool.name != SHOW_VISUAL && tool.name != crate::hz_panes::PANES))
             .collect()
     }
 
@@ -695,6 +698,10 @@ impl Tools {
             "respond_to_input" => self.respond_to_input(parse(args)?).await,
             "archive_chat" => self.archive_chat(parse(args)?).await,
             SHOW_VISUAL => self.show_visual(parse(args)?).await,
+            // hz: MimiEyes — relayed to the window.
+            crate::hz_panes::PANES => {
+                crate::hz_panes::call(&self.zeron, self.zeron.origin().chat_id.as_deref(), args).await
+            }
             other => return Err(format!("unknown tool: {other}")),
         };
         result.map_err(|e| format!("{e:#}"))

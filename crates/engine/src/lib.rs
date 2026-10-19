@@ -25,6 +25,10 @@ pub mod diff_sync;
 pub mod doc_host;
 mod fs_watch;
 pub mod harness_updates;
+// hz: MimiEyes — agent → window relay for the `panes` tool (VENDORED.md #3).
+pub mod hz_relay;
+// hz: MimiEyes — per-turn token ledger for Settings → Usage (VENDORED.md #3).
+pub mod hz_usage;
 pub(crate) mod home_index;
 mod http_error;
 pub mod instance_lock;
@@ -224,6 +228,8 @@ impl EngineCore {
         std::fs::create_dir_all(data_dir)?;
         let legacy_uploads_root = profile.claim_legacy_uploads_root()?;
         let device_id = load_or_create_device_id(data_dir)?;
+        // hz: the token ledger lives with this profile's data.
+        crate::hz_usage::init(data_dir);
         // This device's harness enablement (Settings → Providers) rides the
         // engine data dir — per-device, like the CLI installs it gates.
         registry.load_prefs(data_dir);

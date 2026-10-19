@@ -3153,6 +3153,9 @@ pub struct Transcript {
     /// attachment protection (that set is shared with the primary transcript
     /// and overwritten wholesale).
     doc_override: Option<String>,
+    /// hz: a pane transcript clears its name tag instead of the window's
+    /// title bar (set once by the hz pane mount, `hz_tabs.rs`).
+    hz_top_gap: Option<f32>,
     /// Whether an override instance watches a LIVE doc (`for_doc(follow)`):
     /// only then may the working trailer render — a frozen snapshot must
     /// never spin, whatever its entries claim.
@@ -3588,6 +3591,8 @@ impl Transcript {
             land_end_pending: doc_override.is_some() && !follow,
             doc_live: doc_override.is_some() && follow,
             doc_override,
+            hz_top_gap: None, // hz:
+
             saved_viewports: SavedViewportCache::default(),
             pending_viewport: None,
             viewport_generation: 0,
@@ -3715,6 +3720,15 @@ impl Transcript {
                 self.remeasure_last_row();
                 self.own_turn_kick = true;
             }
+            cx.notify();
+        }
+    }
+
+    /// hz: the pane's first row clears its name tag instead of the window's
+    /// title bar (`hz_tabs.rs`, TAG_GAP).
+    pub(crate) fn set_hz_top_gap(&mut self, gap: f32, cx: &mut Context<Self>) {
+        if self.hz_top_gap != Some(gap) {
+            self.hz_top_gap = Some(gap);
             cx.notify();
         }
     }
@@ -6260,6 +6274,16 @@ impl Transcript {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        // hz: MimiEyes — a message another agent sent (Zeron MCP
+        // `send_message`) shows its sender as a label, not the raw
+        // "[Message from Zeron chat …]" line (mention-free sends only, so no
+        // mention range shifts).
+        let (text, hz_sender) = match crate::hz_agent_msg::split(&text) {
+            Some((sender, body)) if mentions.is_empty() => {
+                (SharedString::from(body.to_owned()), Some(sender))
+            }
+            _ => (text, None),
+        };
         let chip_overlays = self.chip_overlays(row_id, &mentions, theme, cx);
         let fold = self.user_folds.get(row_id).copied().unwrap_or_default();
         let expanded = fold.open.unwrap_or(false);
@@ -6372,7 +6396,7 @@ impl Transcript {
         } else {
             body.into_any_element()
         };
-        div()
+        let content = div()
             .relative()
             .child(body)
             .when(collapsible, |el| {
@@ -6385,8 +6409,23 @@ impl Transcript {
                     theme,
                     cx,
                 ))
-            })
-            .into_any_element()
+            });
+        // hz: the sending agent, by name.
+        match hz_sender {
+            Some(sender) => div()
+                .flex()
+                .flex_col()
+                .gap(px(4.0))
+                .child(
+                    div()
+                        .text_size(crate::typography::ui_rems(11.0))
+                        .text_color(theme.text_muted)
+                        .child(SharedString::from(sender.label())),
+                )
+                .child(content)
+                .into_any_element(),
+            None => content.into_any_element(),
+        }
     }
 
     /// A plain text link aligned with the message's left edge, following the
@@ -7265,7 +7304,10 @@ impl Transcript {
         // for the titlebar — an override instance's first row keeps only the
         // ordinary turn gap, or the content sits double-chrome low.
         let top_gap = if ix == 0 {
-            if self.doc_override.is_some() {
+            // hz: a pane's own tag holds the top edge, not the window title.
+            if let Some(gap) = self.hz_top_gap {
+                gap
+            } else if self.doc_override.is_some() {
                 Theme::SPACE_LG
             } else {
                 Theme::TITLEBAR_HEIGHT + Theme::SPACE_LG + 10.0
