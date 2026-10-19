@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="MimiEyes">
+  <!-- "Just Eyes": the tile is the jumping spider's head — two big front
+       eyes, two side eyes. Zeron accent green (oklch .75 .17 150), Herdr's
+       512 canvas with a 115 corner. -->
+  <defs><clipPath id="tile"><rect width="512" height="512" rx="115"/></clipPath></defs>
+  <rect width="512" height="512" rx="115" fill="#4bcb71"/>
+  <g clip-path="url(#tile)">
+    <circle cx="66" cy="236" r="22" fill="#111a14"/>
+    <circle cx="446" cy="236" r="22" fill="#111a14"/>
+    <circle cx="176" cy="270" r="80" fill="#111a14"/>
+    <circle cx="336" cy="270" r="80" fill="#111a14"/>
+    <circle cx="150" cy="244" r="20" fill="#4bcb71"/>
+    <circle cx="310" cy="244" r="20" fill="#4bcb71"/>
+    <circle cx="196" cy="292" r="8" fill="#4bcb71"/>
+    <circle cx="356" cy="292" r="8" fill="#4bcb71"/>
+  </g>
+</svg>

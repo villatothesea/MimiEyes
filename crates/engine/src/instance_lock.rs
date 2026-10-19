@@ -76,9 +76,10 @@ impl InstanceLock {
                     Some(libc::EWOULDBLOCK) => {
                         let holder = std::fs::read_to_string(&path).unwrap_or_default();
                         let holder = holder.trim();
+                        // hz: the message names MimiEyes (VENDORED.md #1).
                         return Err(EngineError::Other(format!(
-                            "another zeron engine is already running on {} (pid {}); \
-                             stop it or use a different data dir (ZERON_DATA_DIR)",
+                            "another mimieyes engine is already running on {} (pid {}); \
+                             stop it or use a different data dir (MIMIEYES_DATA_DIR)",
                             data_dir.display(),
                             if holder.is_empty() { "unknown" } else { holder },
                         )));
@@ -181,9 +182,10 @@ impl InstanceLock {
 
 #[cfg(windows)]
 fn already_running_error(data_dir: &Path, holder: &str) -> EngineError {
+    // hz: the message names MimiEyes (VENDORED.md #1).
     EngineError::Other(format!(
-        "another zeron engine is already running on {} (pid {}); \
-         stop it or use a different data dir (ZERON_DATA_DIR)",
+        "another mimieyes engine is already running on {} (pid {}); \
+         stop it or use a different data dir (MIMIEYES_DATA_DIR)",
         data_dir.display(),
         if holder.is_empty() { "unknown" } else { holder },
     ))

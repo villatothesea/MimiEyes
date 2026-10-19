@@ -1,12 +1,13 @@
+# hz: MimiEyes — the app ships as `mimieyes` (VENDORED.md #1).
 [package]
-name = "zeron"
+name = "mimieyes"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
 [[bin]]
-name = "zeron"
+name = "mimieyes"
 path = "src/main.rs"
 
 [dependencies]
@@ -29,7 +30,9 @@ tracing-subscriber.workspace = true
 mimalloc.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console"] }
+# hz: + Threading / SystemInformation / WindowsProgramming for the activity
+# monitor (`hz_monitor.rs`).
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Threading", "Win32_System_SystemInformation", "Win32_System_WindowsProgramming"] }
 
 [dev-dependencies]
 tempfile.workspace = true

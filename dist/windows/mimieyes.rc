@@ -1,0 +1,4 @@
+// hz: MimiEyes (VENDORED.md #1) — the "Just Eyes" mark
+// (assets/brand/mimieyes-icon.svg). GPUI's Windows platform loads the
+// application icon from resource ID 1.
+1 ICON "mimieyes.ico"

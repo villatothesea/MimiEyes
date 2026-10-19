@@ -23,6 +23,10 @@ const SYSTEMD_UNIT: &str = "zeron.service";
 const CAPTURED_ENV: &[&str] = &[
     "PATH",
     "ZERON_DATA_DIR",
+    // hz: MimiEyes' own env names ride along (VENDORED.md #1).
+    "MIMIEYES_DATA_DIR",
+    "MIMIEYES_IPC_PORT",
+    "MIMIEYES_HARNESS",
     "ZERON_EDGE_URL",
     "ZERON_EDGE_TOKEN",
     "ZERON_ORG_ID",
