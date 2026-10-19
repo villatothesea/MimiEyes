@@ -449,6 +449,8 @@ fn progress_arc(
 /// `fading` it plays `splash-out` (150ms hold, then 0.5s fade + 6px lift); the
 /// shell removes it once [`SPLASH_OUT`] has run its course.
 pub fn splash_overlay(theme: &Theme, fading: bool, view: EntityId, cx: &mut App) -> AnyElement {
+    // hz: the spider runs its own animation (no spinner view/clock needed).
+    let _ = (view, cx);
     let content = div()
         .absolute()
         .inset_0()
@@ -462,20 +464,15 @@ pub fn splash_overlay(theme: &Theme, fading: bool, view: EntityId, cx: &mut App)
         .items_center()
         .justify_center()
         .gap(px(12.0))
-        // Cell 2.5 — the size every other surface runs this spinner at (the
-        // "Sending…" strip, the transcript working trailer).
-        .child(gradient_spinner(
-            "boot-splash-spinner",
-            theme,
-            2.5,
-            view,
-            cx,
-        ))
+        // hz: MimiEyes — the logo's spider (glances, blinks, hops) instead of
+        // the dot spinner.
+        .child(crate::hz_splash::spider_loader("boot-splash-spider", 56.0))
         .child(
             div()
                 .text_size(crate::typography::ui_rems(12.0))
                 .text_color(theme.text_muted.opacity(0.7))
-                .child(SharedString::from("Setting up Zeron environment")),
+                // hz: the product's own name.
+                .child(SharedString::from("Setting up MimiEyes environment")),
         );
     if fading {
         motion::splash_out("boot-splash-out", content).into_any_element()
