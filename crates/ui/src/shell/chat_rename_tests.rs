@@ -422,3 +422,135 @@ fn hz_a_rename_from_a_pane_edits_on_the_pane(cx: &mut TestAppContext) {
         );
     });
 }
+
+// hz: MimiEyes — the pane tag's rename, end to end in the full shell: a
+// double click opens the field on the tag, focused, and Enter commits it.
+struct FullShellHost(Entity<Shell>);
+
+impl Render for FullShellHost {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().size_full().child(self.0.clone())
+    }
+}
+
+/// A full shell showing one pane tab whose pane holds chat `older`.
+fn hz_pane_shell(cx: &mut TestAppContext) -> (Entity<Shell>, &mut VisualTestContext) {
+    let dir = tempfile::tempdir().unwrap();
+    cx.update(|cx| {
+        gpui_base::init(cx);
+        cx.set_global(Theme::default());
+        crate::app_menus::init(cx);
+        settings::init(UiSettings::default(), dir.path(), cx);
+        crate::history::init(
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            cx,
+        );
+        apply_keymap(cx, &KeymapConfig::default(), ComposerSendBehavior::default());
+    });
+    let (host, cx) = cx.add_window_view(|_, cx| {
+        FullShellHost(cx.new(|cx| {
+            let state = cx.new(|_| AppState::new());
+            let mut shell = Shell::new(
+                state,
+                EngineBootConfig {
+                    data_dir: dir.path().into(),
+                    ipc_port: 0,
+                    edge_url: "http://127.0.0.1:1".into(),
+                    edge_token: None,
+                    org_id: None,
+                    workos_client_id: None,
+                    default_harness: zeron_proto::HarnessId::Mock,
+                },
+                cx,
+            );
+            shell._state_observation = cx.observe(&shell.state, |_, _, _| {});
+            shell.splash = SplashPhase::Gone;
+            shell.reduced_motion = true;
+            shell.settings.hz_panes = true;
+            let mut tab = crate::shell::hz_layout::HzViewTab::new("t1", "l1");
+            tab.root.assign("l1", Some("older".into()));
+            tab.focused = Some("l1".into());
+            let mut layout = crate::shell::hz_layout::HzSpaceLayout::default();
+            layout.active = Some("t1".into());
+            layout.tabs.push(tab);
+            shell.settings.hz_layouts.insert(String::new(), layout);
+            shell.state.update(cx, |state, _| {
+                state.workspace_scope = Some(WorkspaceScope::Local);
+                state.connection = ConnectionStatus::Ready;
+                state.local_device_id = Some("local".into());
+                state.no_project = true;
+                state.chats_synced = true;
+                state.chats = vec![serde_json::from_value(serde_json::json!({
+                    "id": "older", "title": "older", "deviceId": "local", "archived": false,
+                    "createdAt": Utc::now(),
+                }))
+                .unwrap()];
+                state.selected_chat = Some("older".into());
+            });
+            shell.active_chat = "older".into();
+            shell
+        }))
+    });
+    let shell = host.read_with(cx, |host, _| host.0.clone());
+    for _ in 0..3 {
+        redraw(cx);
+    }
+    (shell, cx)
+}
+
+#[gpui::test]
+fn hz_double_clicking_a_pane_tag_renames_there(cx: &mut TestAppContext) {
+    let (shell, cx) = hz_pane_shell(cx);
+    let tag = cx.debug_bounds("hz-tag-l1").expect("the pane tag is drawn");
+    double_click(cx, tag.center());
+    redraw(cx);
+    let input = shell.read_with(cx, |shell, _| {
+        let rename = shell.chat_rename.as_ref().expect("a rename is open");
+        assert_eq!(rename.surface, ChatRenameSurface::HzPane);
+        rename.input.clone()
+    });
+    cx.update(|window, cx| {
+        assert!(input.focus_handle(cx).is_focused(window), "the tag's field has the keyboard");
+    });
+    redraw(cx);
+    assert!(
+        shell.read_with(cx, |shell, _| shell.chat_rename.is_some()),
+        "the field stays open a frame later"
+    );
+    cx.simulate_keystrokes("x enter");
+    redraw(cx);
+    assert!(shell.read_with(cx, |shell, _| shell.chat_rename.is_none()));
+    assert!(mutated(&shell, cx), "Enter commits the new title");
+    // The new title shows at once, before any engine round trip.
+    shell.read_with(cx, |shell, cx| {
+        let title = shell.state.read(cx).chats[0].title.clone();
+        // The field opened with the name selected, so typing replaced it.
+        assert_eq!(title.as_deref(), Some("x"));
+    });
+}
+
+// hz: a click in a pane's reply leaves the keyboard on the pane view's focus
+// scope (the stock column's, which the view replaces), so Ctrl+C copies the
+// selected reply text instead of going nowhere.
+#[gpui::test]
+fn hz_ctrl_c_copies_a_reply_selection_in_the_panes(cx: &mut TestAppContext) {
+    let _selection = crate::markdown::selection::test_state_lock();
+    let (shell, cx) = hz_pane_shell(cx);
+    let tag = cx.debug_bounds("hz-tag-l1").expect("the pane tag is drawn");
+    // Below the tag: the pane's transcript area.
+    cx.simulate_click(tag.origin + gpui::point(px(40.), px(120.)), Modifiers::default());
+    redraw(cx);
+    cx.update(|window, cx| {
+        assert!(shell.read(cx).navigation_focus.main.contains_focused(window, cx));
+    });
+    crate::markdown::selection::begin_with_span("transcript-row:0", "selected reply", 0..8);
+    crate::markdown::selection::end_active_drag();
+    cx.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string("sentinel".into())));
+    cx.simulate_keystrokes("ctrl-c");
+    let copied = cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text()));
+    assert_eq!(copied.as_deref(), Some("selected"));
+    crate::markdown::selection::clear_if_owner("transcript-row:0");
+}

@@ -420,6 +420,20 @@ pub(crate) fn render_usage_meter(
                     (fraction * 100.0).round() as u32
                 ))),
         )
+        // hz: MimiEyes — when this window resets ("3:45 PM", "Thu", "Sep 14"),
+        // in a fixed column so the rows line up (VENDORED.md #13).
+        .child(
+            div()
+                .w(px(58.0))
+                .flex_none()
+                .text_right()
+                .text_color(theme.text_faint)
+                .child(SharedString::from(
+                    format_reset(window.resets_at, chrono::Utc::now())
+                        .and_then(|reset| reset.strip_prefix("resets ").map(str::to_owned))
+                        .unwrap_or_default(),
+                )),
+        )
         .into_any_element()
 }
 

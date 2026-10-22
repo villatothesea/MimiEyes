@@ -122,6 +122,7 @@ fn project_dirs(harness: HarnessId) -> &'static [&'static str] {
         HarnessId::Pi => &[".agents/skills", ".pi/skills"],
         HarnessId::Devin => &[".agents/skills"],
         HarnessId::Antigravity => &[".agents/skills", ".gemini/skills"],
+        HarnessId::Deepseek => &[".agents/skills"], // hz:
         HarnessId::Codex => &[".agents/skills", ".codex/skills"],
         HarnessId::Mock => &[],
     }

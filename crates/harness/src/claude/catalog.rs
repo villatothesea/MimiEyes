@@ -288,9 +288,15 @@ pub(super) fn with_discovered_models(
         if ladder.contains(&ReasoningLevel::XHigh) {
             ladder.extend([ReasoningLevel::Ultracode, ReasoningLevel::Ultrathink]);
         }
+        // hz: the CLI names its default entry "Default (recommended)"; the
+        // row reads as the model it is ("claude-haiku-6" → "Haiku 6").
+        let label = text("displayName")
+            .filter(|name| !name.starts_with("Default"))
+            .map(str::to_owned)
+            .unwrap_or_else(|| hz_label_from_id(id));
         models.push(Model {
             id: id.into(),
-            label: text("displayName").unwrap_or(id).into(),
+            label,
             description: text("description").map(str::to_owned),
             reasoning_levels: ladder,
             options: vec![],
@@ -317,6 +323,23 @@ pub(super) fn with_discovered_models(
         }
     }
     Ok(models)
+}
+
+/// hz: `claude-sonnet-5-5` -> "Sonnet 5.5"; `claude-opus-6[1m]` -> "Opus 6".
+fn hz_label_from_id(id: &str) -> String {
+    let id = id.strip_suffix("[1m]").unwrap_or(id);
+    let id = snapshot_base(id).unwrap_or(id);
+    let mut parts = id.strip_prefix("claude-").unwrap_or(id).split('-');
+    let Some(family) = parts.next().filter(|f| !f.is_empty()) else {
+        return id.to_owned();
+    };
+    let mut name: String = family[..1].to_uppercase() + &family[1..];
+    let version: Vec<&str> = parts.collect();
+    if !version.is_empty() {
+        name.push(' ');
+        name.push_str(&version.join("."));
+    }
+    name
 }
 
 /// `claude-haiku-4-5-20251001` -> `claude-haiku-4-5`.
@@ -362,10 +385,19 @@ pub fn static_models() -> Vec<Model> {
             XHIGH_LADDER,
             vec![toggle("fastMode", "Fast Mode")],
         ),
+        // hz: MimiEyes — Sonnet 5.5 (the CLI's default) had no curated row,
+        // so the picker showed it as "Default (recommended)" (VENDORED.md #10).
+        model(
+            "claude-sonnet-5-5",
+            "Sonnet 5.5",
+            "Balanced speed and intelligence",
+            XHIGH_LADDER,
+            vec![context_window()],
+        ),
         model(
             "claude-sonnet-5",
             "Sonnet 5",
-            "Balanced speed and intelligence",
+            "Previous generation Sonnet",
             XHIGH_LADDER,
             vec![context_window()],
         ),
@@ -382,6 +414,22 @@ pub fn static_models() -> Vec<Model> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // hz: the CLI's default entry reads as its model, never "Default".
+    #[test]
+    fn hz_default_entry_is_named_after_its_model() {
+        assert_eq!(hz_label_from_id("claude-sonnet-5-5"), "Sonnet 5.5");
+        assert_eq!(hz_label_from_id("claude-opus-6[1m]"), "Opus 6");
+        assert_eq!(hz_label_from_id("claude-haiku-6-20270101"), "Haiku 6");
+        let response = serde_json::json!({"response": {"models": [
+            {"value": "default", "resolvedModel": "claude-haiku-7", "displayName": "Default (recommended)"}
+        ]}});
+        let models = with_discovered_models(static_models(), &response).unwrap();
+        assert_eq!(models[0].id, "claude-haiku-7");
+        assert_eq!(models[0].label, "Haiku 7");
+        let sonnet = static_models().into_iter().find(|m| m.id == "claude-sonnet-5-5").unwrap();
+        assert_eq!(sonnet.label, "Sonnet 5.5");
+    }
 
     #[test]
     fn effort_maps_special_modes() {

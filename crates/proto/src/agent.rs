@@ -25,6 +25,9 @@ pub enum HarnessId {
     /// google's antigravity agent over acp (`agy_acp_server`, installed from
     /// its pinned release archive).
     Antigravity,
+    /// hz: MimiEyes — DeepSeek Harness (`dsh --profile acp`, npm
+    /// `@deepseek-ai/dsh`), driven over ACP (VENDORED.md #15).
+    Deepseek,
     /// Test harness; never shown in production pickers.
     Mock,
 }

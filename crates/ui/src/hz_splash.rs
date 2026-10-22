@@ -7,14 +7,14 @@
 use gpui::{Animation, AnimationExt as _, IntoElement, ParentElement as _, Styled as _, div, px};
 use std::time::Duration;
 
-/// The logo's colours (fixed brand colours, not theme tokens).
-const GREEN: u32 = 0x4bcb71;
+/// The logo's ink (its eyes); its body wears the accent (VENDORED.md #10).
 const INK: u32 = 0x111a14;
 /// One loop: glance, blink, hop.
 const PERIOD_MS: u64 = 2400;
 
-/// The animated mark, `size` px square.
-pub fn spider_loader(id: &'static str, size: f32) -> impl IntoElement {
+/// The animated mark, `size` px square, its body in `accent` (the user's
+/// accent colour, as the taskbar icon).
+pub fn spider_loader(id: &'static str, size: f32, accent: gpui::Hsla) -> impl IntoElement {
     // Logo units (512 canvas) → px.
     let u = move |v: f32| v * size / 512.0;
     div().size(px(size)).relative().child(
@@ -23,6 +23,7 @@ pub fn spider_loader(id: &'static str, size: f32) -> impl IntoElement {
             Animation::new(Duration::from_millis(PERIOD_MS)).repeat(),
             move |el, t| {
                 let tau = std::f32::consts::TAU;
+                let ink: gpui::Hsla = gpui::rgb(INK).into();
                 // The gaze sweeps left → right → left over the loop.
                 let look = u(20.0) * (tau * t).sin();
                 // A quick blink a third of the way in.
@@ -36,7 +37,7 @@ pub fn spider_loader(id: &'static str, size: f32) -> impl IntoElement {
                 } else {
                     0.0
                 };
-                let circle = |cx: f32, cy: f32, r: f32, color: u32, squash: f32| {
+                let circle = |cx: f32, cy: f32, r: f32, color: gpui::Hsla, squash: f32| {
                     let h = 2.0 * r * squash;
                     div()
                         .absolute()
@@ -45,10 +46,10 @@ pub fn spider_loader(id: &'static str, size: f32) -> impl IntoElement {
                         .w(px(u(2.0 * r)))
                         .h(px(u(h)))
                         .rounded_full()
-                        .bg(gpui::rgb(color))
+                        .bg(color)
                 };
                 let eye = |cx: f32| {
-                    let mut eye = circle(cx, 270.0, 80.0, INK, blink);
+                    let mut eye = circle(cx, 270.0, 80.0, ink, blink);
                     // Highlights only while the eye is open.
                     if blink > 0.6 {
                         eye = eye
@@ -59,7 +60,7 @@ pub fn spider_loader(id: &'static str, size: f32) -> impl IntoElement {
                                     .top(px(u(80.0 - 26.0 - 20.0)))
                                     .size(px(u(40.0)))
                                     .rounded_full()
-                                    .bg(gpui::rgb(GREEN)),
+                                    .bg(accent),
                             )
                             .child(
                                 div()
@@ -68,17 +69,17 @@ pub fn spider_loader(id: &'static str, size: f32) -> impl IntoElement {
                                     .top(px(u(80.0 + 22.0 - 8.0)))
                                     .size(px(u(16.0)))
                                     .rounded_full()
-                                    .bg(gpui::rgb(GREEN)),
+                                    .bg(accent),
                             );
                     }
                     eye
                 };
                 el.top(px(-hop))
                     .rounded(px(u(115.0)))
-                    .bg(gpui::rgb(GREEN))
+                    .bg(accent)
                     .overflow_hidden()
-                    .child(circle(66.0, 236.0, 22.0, INK, 1.0))
-                    .child(circle(446.0, 236.0, 22.0, INK, 1.0))
+                    .child(circle(66.0, 236.0, 22.0, ink, 1.0))
+                    .child(circle(446.0, 236.0, 22.0, ink, 1.0))
                     .child(eye(176.0))
                     .child(eye(336.0))
             },

@@ -4691,6 +4691,12 @@ impl Transcript {
 
     /// Rebuild rows from app state; splice minimal ranges into the list.
     fn sync(&mut self, cx: &mut Context<Self>) {
+        // hz: a slow row rebuild leaves a line in the log.
+        let _hz_timer = crate::hz_perf::Timer::new(
+            "transcript sync",
+            self.chat_id.clone().unwrap_or_default(),
+            8,
+        );
         if self.retain_on_deselect
             && self.doc_override.is_none()
             && self.state.read(cx).selected_chat.is_none()

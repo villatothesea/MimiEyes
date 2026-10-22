@@ -37,6 +37,24 @@ pub fn used_fraction(account: &AgentAccount) -> Option<f32> {
         .reduce(f32::max)
 }
 
+/// hz: MimiEyes — the ring's label: the percent and, beside it, when the
+/// window it shows (the most used) resets ("44% · 3:45 PM"). Pure given `now`.
+pub fn hz_ring_label(account: &AgentAccount, now: chrono::DateTime<chrono::Utc>) -> Option<String> {
+    let window = account
+        .usage_windows
+        .iter()
+        .max_by(|a, b| a.used_fraction.total_cmp(&b.used_fraction))?;
+    let percent = (window.used_fraction.clamp(0.0, 1.0) * 100.0).round() as u32;
+    Some(
+        match crate::settings::accounts::format_reset(window.resets_at, now)
+            .and_then(|reset| reset.strip_prefix("resets ").map(str::to_owned))
+        {
+            Some(at) => format!("{percent}% · {at}"),
+            None => format!("{percent}%"),
+        },
+    )
+}
+
 /// The harness's live account, when it reports usage. Pure.
 pub fn active_account(
     snapshot: &AgentAccountsSnapshot,
@@ -428,6 +446,18 @@ impl Render for AccountUsage {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
         let context = self.state.read(cx).context_usage;
+        // hz: the reset time rides beside the percent; every window's reset
+        // is in the ring's tooltip.
+        let now = chrono::Utc::now();
+        let live = self
+            .harness
+            .and_then(|harness| active_account(self.snapshot(cx)?, harness))
+            .cloned();
+        let hz_label = live.as_ref().and_then(|account| hz_ring_label(account, now));
+        let hz_resets = live
+            .as_ref()
+            .filter(|account| !account.usage_windows.is_empty())
+            .map(|account| accounts::usage_resets(&account.usage_windows, now));
         let account = self.fraction(cx).map(|fraction| {
             let level = usage_level(fraction);
             let chip = crate::context_usage::ring_chip(
@@ -438,10 +468,17 @@ impl Render for AccountUsage {
                     UsageLevel::Normal => theme.text_muted,
                     _ => usage_color(level, &theme),
                 },
-                format!("{}%", (fraction * 100.0).round() as u32),
+                hz_label
+                    .clone()
+                    .unwrap_or_else(|| format!("{}%", (fraction * 100.0).round() as u32)),
                 self.popup.get() == Some(&FooterCard::Accounts),
                 &theme,
             );
+            // hz: "5h: resets 3:45 PM · Week: resets Thu" on hover.
+            let chip = match &hz_resets {
+                Some(resets) => chip.tooltip(widgets::text_tooltip(resets.clone())),
+                None => chip,
+            };
             self.trigger(
                 chip,
                 FooterCard::Accounts,
@@ -494,6 +531,19 @@ mod tests {
                 .collect::<Vec<_>>(),
         }))
         .unwrap()
+    }
+
+    // hz: the label carries the most-used window's reset beside its percent.
+    #[test]
+    fn hz_ring_label_shows_the_reset_of_the_most_used_window() {
+        let now = chrono::Utc::now();
+        let mut live = account(HarnessId::ClaudeCode, true, &[0.12, 0.44]);
+        assert_eq!(hz_ring_label(&live, now).as_deref(), Some("44%"));
+        live.usage_windows[1].resets_at = Some(now + chrono::Duration::hours(2));
+        let label = hz_ring_label(&live, now).unwrap();
+        assert!(label.starts_with("44% · "), "{label}");
+        assert!(label.ends_with("AM") || label.ends_with("PM"), "{label}");
+        assert_eq!(hz_ring_label(&account(HarnessId::Codex, true, &[]), now), None);
     }
 
     #[test]

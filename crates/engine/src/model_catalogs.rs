@@ -31,19 +31,28 @@ fn read(path: &Path, context: &ModelContext) -> Option<Vec<Model>> {
         && !saved.catalog.is_empty())
     .then_some(saved.catalog)
 }
-/// hz: MimiEyes — Claude's catalog key hashes `~/.claude/.credentials.json`,
-/// which changes on every token refresh, so the exact file is usually missing
-/// and the picker waited ~20 s on a cold `claude` probe. Claude offers the same
-/// manifest whatever the login (even logged out, see `list_inner`), so its
-/// newest saved catalog stands in while the live refresh runs (VENDORED.md #9).
-fn hz_latest_claude(path: &Path, context: &ModelContext) -> Option<Vec<Model>> {
+/// hz: MimiEyes — the harness's newest saved catalog stands in
+/// (stale-while-revalidate) while the live refresh for the exact key runs,
+/// when it differs only by the CLI's version — the key changes whenever the
+/// version reads differently, and each miss held the picker for a cold
+/// 30-60 s discovery. A same-version miss means the credentials changed: that
+/// other account's list is never shown, except Claude's, whose manifest is the
+/// same for every login (its key changes on each token refresh). VENDORED.md
+/// #9, #20.
+fn hz_latest(path: &Path, context: &ModelContext, any_account: bool) -> Option<Vec<Model>> {
     std::fs::read_dir(path.parent()?)
         .ok()?
         .filter_map(Result::ok)
         .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
         .filter_map(|entry| Some((entry.metadata().ok()?.modified().ok()?, entry.path())))
         .max_by_key(|(modified, _)| *modified)
-        .and_then(|(_, newest)| read(&newest, context))
+        .and_then(|(_, newest)| {
+            let saved: Saved = serde_json::from_slice(&std::fs::read(newest).ok()?).ok()?;
+            (saved.schema_version == 1
+                && !saved.catalog.is_empty()
+                && (any_account || saved.binary_version != context.binary_version))
+                .then_some(saved.catalog)
+        })
 }
 fn save(path: &Path, context: &ModelContext, models: &[Model]) -> std::io::Result<()> {
     if models.is_empty() {
@@ -130,11 +139,9 @@ async fn list_inner(
             .map(|catalog| catalog.models);
     };
     let path = location(root, harness.as_ref(), &context);
+    // hz: the harness's newest saved catalog while the exact one is not.
     let disk = read(&path, &context).or_else(|| {
-        // hz: Claude's newest catalog while its exact one is not saved yet.
-        (harness.id() == zeron_proto::HarnessId::ClaudeCode)
-            .then(|| hz_latest_claude(&path, &context))
-            .flatten()
+        hz_latest(&path, &context, harness.id() == zeron_proto::HarnessId::ClaudeCode)
     });
     // The refresh owns its lifetime; returning disk early must not cancel it.
     let mut refresh = tokio::spawn({
@@ -172,6 +179,9 @@ async fn list_inner(
             result
         }
     });
+    // hz: whether a saved list answered, and how long a live wait took.
+    let hz_started = std::time::Instant::now();
+    let hz_disk = disk.is_some();
     let result = if disk.is_some() {
         tokio::time::timeout(Duration::from_millis(100), &mut refresh)
             .await
@@ -179,6 +189,17 @@ async fn list_inner(
     } else {
         Some(refresh.await)
     };
+    let hz_ms = hz_started.elapsed().as_millis() as u64;
+    if hz_ms >= 500 || !hz_disk {
+        tracing::info!(
+            target: "hz_perf",
+            harness = ?harness.id(),
+            saved_list = hz_disk,
+            binary_version = ?context.binary_version,
+            ms = hz_ms,
+            "model catalog"
+        );
+    }
     if !unchanged(harness.as_ref(), &context) {
         return Err(HarnessError::Protocol(
             "model discovery context changed; retry".into(),
@@ -247,17 +268,25 @@ mod tests {
     // hz: a credential refresh's new key falls back to Claude's newest
     // catalog of the same binary version; nothing saved, nothing returned.
     #[test]
-    fn hz_claude_falls_back_to_its_newest_catalog() {
+    fn hz_a_missing_catalog_falls_back_to_the_newest_saved_one() {
         let dir = tempfile::tempdir().unwrap();
         let wanted = dir.path().join("new-key.json");
-        assert!(hz_latest_claude(&wanted, &context("new-key")).is_none());
-        save(&dir.path().join("old-key.json"), &context("old-key"), &models()).unwrap();
-        let other = ModelContext {
+        let now = ModelContext {
             binary_version: Some("2.0.0".into()),
             ..context("new-key")
         };
-        assert_eq!(hz_latest_claude(&wanted, &context("new-key")), Some(models()));
-        assert!(hz_latest_claude(&wanted, &other).is_none());
+        assert!(hz_latest(&wanted, &now, false).is_none());
+        // Saved by an older CLI: stands in while the new version refreshes.
+        save(&dir.path().join("old-key.json"), &context("old-key"), &models()).unwrap();
+        assert_eq!(hz_latest(&wanted, &now, false), Some(models()));
+        // Same CLI version, another key: another account's list, never shown
+        // — unless the harness's list is the same for every login (Claude).
+        let same_version = ModelContext {
+            binary_version: Some("1.0.0".into()),
+            ..context("new-key")
+        };
+        assert!(hz_latest(&wanted, &same_version, false).is_none());
+        assert_eq!(hz_latest(&wanted, &same_version, true), Some(models()));
     }
     struct Probe {
         account: std::sync::atomic::AtomicUsize,

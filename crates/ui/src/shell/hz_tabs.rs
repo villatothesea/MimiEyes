@@ -35,7 +35,8 @@
 //! Mutate calls) are stripped — ops act directly on the local tree and save.
 
 use super::hz_layout::{
-    HzDir, HzNode, HzSpaceLayout, HzSplit, HzTile, HzViewTab, drag_ratio, gutter_at,
+    HzClosed, HzDir, HzNode, HzPreset, HzSpaceLayout, HzSplit, HzTile, HzViewTab, drag_ratio,
+    gutter_at,
 };
 use super::side_chats::SideChatTab;
 use super::*;
@@ -47,6 +48,39 @@ use std::rc::Rc;
 const TAG_GAP: f32 = 46.0;
 /// Width kept for a tab's name (about eight letters).
 const TAB_NAME_MIN: f32 = 35.0;
+/// Closed panes remembered (Settings → Closed panes).
+const HZ_CLOSED_MAX: usize = 200;
+
+/// A preset's little diagram (16×13): its panes as outlined cells.
+fn preset_glyph(preset: HzPreset, color: gpui::Hsla) -> AnyElement {
+    let cell = || div().flex_1().min_w_0().min_h_0().rounded(px(1.5)).border_1().border_color(color);
+    let column = |n: usize| {
+        let mut col = div().flex_1().flex().flex_col().gap(px(1.5));
+        for _ in 0..n {
+            col = col.child(cell());
+        }
+        col
+    };
+    let frame = div().flex_none().w(px(16.0)).h(px(13.0)).flex().gap(px(1.5));
+    match preset {
+        HzPreset::Columns2 => frame.child(column(1)).child(column(1)),
+        HzPreset::Rows2 => frame.child(column(2)),
+        HzPreset::LeftOneRightTwo => frame.child(column(1)).child(column(2)),
+        HzPreset::LeftTwoRightOne => frame.child(column(2)).child(column(1)),
+        HzPreset::Grid4 => frame.child(column(2)).child(column(2)),
+    }
+    .into_any_element()
+}
+
+/// A tab's name as the strip and tree show it ("Tab 2" when unnamed).
+fn hz_tab_name(tab: &HzViewTab, place: usize) -> String {
+    let name = tab.name.trim();
+    if name.is_empty() {
+        format!("Tab {}", place + 1)
+    } else {
+        name.to_owned()
+    }
+}
 /// Height of the view-tab strip under the title bar.
 
 /// What the conversation column draws for the current workspace.
@@ -207,10 +241,12 @@ pub(super) struct HzUi {
     /// painting.
     tab_bounds: Rc<RefCell<HashMap<String, (f32, f32)>>>,
     /// The right-click menus: (slot | tab id, where it opened).
-    pane_menu: Option<(String, Point<Pixels>)>,
-    tab_menu: Option<(String, Point<Pixels>)>,
+    pub(super) pane_menu: Option<(String, Point<Pixels>)>,
+    pub(super) tab_menu: Option<(String, Point<Pixels>)>,
     /// The "No project" row's menu, where it opened.
     pub(super) loose_menu: Option<Point<Pixels>>,
+    /// A project row's "+" menu: (project key, where it opened).
+    pub(super) plus_menu: Option<(String, Point<Pixels>)>,
     /// The next session rename opens on the pane's tag (set just before
     /// `open_rename_chat` by the pane's own rename paths).
     pub(super) rename_on_pane: bool,
@@ -254,6 +290,7 @@ impl Default for HzUi {
             pane_menu: None,
             tab_menu: None,
             loose_menu: None,
+            plus_menu: None,
             rename_on_pane: false,
             minted: std::collections::HashSet::new(),
             rename: None,
@@ -434,6 +471,7 @@ impl Shell {
         if !self.settings.hz_panes {
             return;
         }
+        self.hz_prune_closed(cx);
         if !self.settings.hz_layouts.contains_key(&key) {
             // "No project" removed (or never used) while nothing is selected:
             // show a real project instead of growing it back.
@@ -713,9 +751,15 @@ impl Shell {
     /// (a new-session pane) — panes stay on until the "Panes" switch. The
     /// sessions stay in the sidebar; a click there brings one back.
     fn hz_close_tab(&mut self, id: &str, cx: &mut Context<Self>) {
+        let place = self
+            .hz_layout()
+            .and_then(|l| l.tabs.iter().position(|t| t.id == id))
+            .unwrap_or(0);
         let Some(tab) = self.hz_layout_mut().remove_tab(id) else {
             return;
         };
+        let key = self.hz_key();
+        self.hz_note_closed(&key, &tab.id, &hz_tab_name(&tab, place), &tab.root.chats());
         for leaf in tab.root.leaf_ids() {
             self.hz.panes.remove(leaf);
         }
@@ -737,6 +781,21 @@ impl Shell {
     }
 
     fn hz_close_other_tabs(&mut self, keep: &str, cx: &mut Context<Self>) {
+        let dropped: Vec<(String, String, Vec<String>)> = self
+            .hz_layout()
+            .map(|l| {
+                l.tabs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, t)| t.id != keep)
+                    .map(|(ix, t)| (t.id.clone(), hz_tab_name(t, ix), t.root.chats()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let key = self.hz_key();
+        for (tab, name, chats) in dropped {
+            self.hz_note_closed(&key, &tab, &name, &chats);
+        }
         {
             let layout = self.hz_layout_mut();
             layout.tabs.retain(|t| t.id == keep);
@@ -858,6 +917,9 @@ impl Shell {
     /// draft whose send minted the chat keeps its mount (the send is still
     /// running in its composer).
     fn hz_ensure_pane(&mut self, leaf: &str, chat: Option<&str>, cx: &mut Context<Self>) -> bool {
+        // hz: a pane mounting its conversation is timed (cache hits are not).
+        let _hz_timer = (!self.hz.panes.get(leaf).is_some_and(|p| p.chat.as_deref() == chat))
+            .then(|| crate::hz_perf::Timer::new("pane mount", chat.unwrap_or("draft").to_owned(), 0));
         if let Some(pane) = self.hz.panes.get_mut(leaf) {
             if pane.chat.as_deref() == chat {
                 return true;
@@ -911,6 +973,10 @@ impl Shell {
         };
         tab.transcript
             .update(cx, |t, cx| t.set_hz_top_gap(TAG_GAP, cx));
+        // The window's picker has the catalogs already: no re-discovery.
+        let window_pickers = self.composer.read(cx).pickers().clone();
+        let pane_pickers = tab.composer.read(cx).pickers().clone();
+        pane_pickers.update(cx, |p, cx| p.hz_seed_from(&window_pickers, cx));
         // A new composer asks for the keyboard at once; only the focused pane
         // may have it (the render pass hands it over). Like the main
         // composer, a pane's shows the account (plan usage) ring.
@@ -964,6 +1030,14 @@ impl Shell {
     /// to a fresh new-session tab. Closing only hides: the session stays in
     /// the sidebar, and a click there opens it in a pane again.
     fn hz_close_pane(&mut self, leaf: &str, cx: &mut Context<Self>) {
+        let from = self.hz_layout().and_then(|layout| {
+            layout
+                .tabs
+                .iter()
+                .enumerate()
+                .find(|(_, t)| t.root.leaf_ids().contains(&leaf))
+                .map(|(ix, t)| (t.id.clone(), hz_tab_name(t, ix)))
+        });
         let (closed_chat, tab_gone) = {
             let layout = self.hz_layout_mut();
             let Some(ix) = layout
@@ -984,6 +1058,10 @@ impl Shell {
             (chat, gone)
         };
         self.hz.panes.remove(leaf);
+        if let (Some(chat), Some((tab, name))) = (&closed_chat, from) {
+            let key = self.hz_key();
+            self.hz_note_closed(&key, &tab, &name, std::slice::from_ref(chat));
+        }
         // The pane that holds the selection went: the active tab's focused
         // chat takes over (none when its panes are empty). With no tab left
         // nothing stays selected, so the fresh tab is a new session.
@@ -1050,6 +1128,16 @@ impl Shell {
                 self.hz_save(cx);
             }
             "rename" => self.hz_rename_pane(&leaf, cx),
+            "pin" => {
+                if let Some(chat) = self
+                    .hz_active()
+                    .and_then(|tab| tab.root.chat_of(&leaf).cloned())
+                    .flatten()
+                {
+                    let pinned = self.active_sidebar_pins(cx).contains(&chat);
+                    self.set_chat_pinned(chat, !pinned, cx);
+                }
+            }
             // As in HerdrGui: the session leaves the window with its pane
             // (Settings → Archived brings it back).
             "archive" => {
@@ -1361,6 +1449,254 @@ impl Shell {
         self.hz_new_session_in_project(key.to_owned(), cx);
     }
 
+    /// The "+" menu's New layout: a new tab in project `key` whose panes
+    /// are new sessions arranged as `preset`, the first one focused.
+    pub(super) fn hz_new_layout_in_project(&mut self, key: String, preset: HzPreset, cx: &mut Context<Self>) {
+        self.settings.hz_panes = true;
+        self.hz.project = key;
+        self.hz.composing = false;
+        self.set_route(Route::Chat, cx);
+        let root = preset.tree(&mut |prefix| Self::hz_id(prefix));
+        let first = root.leaf_ids().first().map(|l| (*l).to_owned());
+        let tab = HzViewTab {
+            id: Self::hz_id("t"),
+            name: String::new(),
+            root,
+            focused: first.clone(),
+            zoom: None,
+        };
+        {
+            let layout = self.hz_layout_mut();
+            layout.active = Some(tab.id.clone());
+            layout.tabs.push(tab);
+        }
+        self.hz_select(None, cx);
+        self.hz.typing_in = first;
+        self.hz_save(cx);
+        cx.notify();
+    }
+
+    /// A status's colour (the dots', and the tree's tab numbers').
+    pub(super) fn hz_status_color(indicator: zeron_proto::ChatIndicator, theme: &Theme) -> gpui::Hsla {
+        use zeron_proto::ChatIndicator as I;
+        match indicator {
+            I::Idle | I::Working => theme.accent,
+            I::AwaitingInput | I::Errored => theme.danger,
+            I::Completed => theme.success,
+        }
+    }
+
+    /// A project row's "+" menu: a new session, or a new layout of several.
+    pub(super) fn render_hz_plus_menu(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (key, position) = self.hz.plus_menu.clone()?;
+        let theme = Theme::of(cx).for_popup();
+        let new_key = key.clone();
+        let mut menu = popover::popover_card(&theme)
+            .w(px(232.0))
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.hz.plus_menu = None;
+                cx.notify();
+            }))
+            .flex()
+            .flex_col()
+            .child(
+                popover::menu_row(&theme, false, "hz-plus-menu-session")
+                    .id("hz-plus-menu-session")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.hz.plus_menu = None;
+                        this.hz_new_session_in_project(new_key.clone(), cx);
+                    }))
+                    .child(icon(icons::PLUS).size(px(15.0)).text_color(theme.text_muted))
+                    .child(SharedString::from("New session")),
+            )
+            .child(popover::menu_separator())
+            .child(
+                div()
+                    .px(px(10.0))
+                    .pt(px(4.0))
+                    .pb(px(2.0))
+                    .text_size(crate::typography::ui_rems(11.5))
+                    .text_color(theme.text_faint)
+                    .child(SharedString::from("New layout")),
+            );
+        for (ix, preset) in HzPreset::ALL.into_iter().enumerate() {
+            let key = key.clone();
+            menu = menu.child(
+                popover::menu_row(&theme, false, format!("hz-plus-menu-layout-{ix}"))
+                    .id(("hz-plus-menu-layout", ix))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.hz.plus_menu = None;
+                        this.hz_new_layout_in_project(key.clone(), preset, cx);
+                    }))
+                    .child(preset_glyph(preset, theme.text_muted))
+                    .child(div().flex_1().child(SharedString::from(preset.label())))
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(crate::typography::ui_rems(11.5))
+                            .text_color(theme.text_faint)
+                            .child(SharedString::from(preset.panes().to_string())),
+                    ),
+            );
+        }
+        Some(popover::menu_at(
+            "hz-plus-menu",
+            position,
+            menu.into_any_element(),
+            None,
+        ))
+    }
+
+    /// Remember closed panes (newest first) for Settings → Closed panes.
+    fn hz_note_closed(&mut self, project: &str, tab: &str, tab_name: &str, chats: &[String]) {
+        let at = Utc::now().timestamp_millis();
+        for chat in chats {
+            self.settings.hz_closed.retain(|c| &c.chat != chat);
+            self.settings.hz_closed.insert(
+                0,
+                HzClosed {
+                    chat: chat.clone(),
+                    project: project.to_owned(),
+                    tab: tab.to_owned(),
+                    tab_name: tab_name.to_owned(),
+                    at,
+                },
+            );
+        }
+        self.settings.hz_closed.truncate(HZ_CLOSED_MAX);
+    }
+
+    /// A closed pane whose session is in a pane again, archived or deleted
+    /// leaves the list.
+    fn hz_prune_closed(&mut self, cx: &mut Context<Self>) {
+        if self.settings.hz_closed.is_empty() {
+            return;
+        }
+        let before = self.settings.hz_closed.len();
+        let placed: std::collections::HashSet<String> = self
+            .settings
+            .hz_layouts
+            .values()
+            .flat_map(|l| l.tabs.iter().flat_map(|t| t.root.chats()))
+            .collect();
+        let state = self.state.read(cx);
+        self.settings.hz_closed.retain(|c| {
+            !placed.contains(&c.chat)
+                && state
+                    .chats
+                    .iter()
+                    .any(|row| row.id == c.chat && !row.archived)
+        });
+        if self.settings.hz_closed.len() != before {
+            self.schedule_save(cx);
+        }
+    }
+
+    /// Every session no pane shows, for Settings → Closed panes: closed
+    /// panes first (newest first, with the tab they left), then sessions
+    /// that were never in a pane (an agent's, or from before panes).
+    pub(super) fn hz_closed_items(&self, cx: &App) -> Vec<crate::settings::hz_closed::ClosedItem> {
+        use crate::settings::hz_closed::ClosedItem;
+        let state = self.state.read(cx);
+        let placed: std::collections::HashSet<String> = self
+            .settings
+            .hz_layouts
+            .values()
+            .flat_map(|l| l.tabs.iter().flat_map(|t| t.root.chats()))
+            .collect();
+        let project_name = |key: &str| {
+            state
+                .space_row(key)
+                .map(|s| s.display_name().to_owned())
+                .unwrap_or_else(|| "No project".to_owned())
+        };
+        let item = |chat: &zeron_proto::Chat, place: String, closed_at: Option<i64>| ClosedItem {
+            chat_id: chat.id.clone(),
+            title: chat
+                .title
+                .as_deref()
+                .map(transcript::single_line)
+                .unwrap_or_else(|| "Untitled session".to_owned()),
+            place,
+            closed_at,
+            active_at: chat.last_message_at.unwrap_or(chat.created_at).timestamp_millis(),
+            harness: chat.config.as_ref().map(|c| c.harness),
+        };
+        let mut out = Vec::new();
+        let mut listed = std::collections::HashSet::new();
+        for closed in &self.settings.hz_closed {
+            let Some(chat) = state
+                .chats
+                .iter()
+                .find(|c| c.id == closed.chat && !c.archived)
+            else {
+                continue;
+            };
+            if placed.contains(&chat.id) || !listed.insert(chat.id.clone()) {
+                continue;
+            }
+            let place = format!("{} › {}", project_name(&closed.project), closed.tab_name);
+            out.push(item(chat, place, Some(closed.at)));
+        }
+        let mut never: Vec<&zeron_proto::Chat> = state
+            .chats
+            .iter()
+            .filter(|c| {
+                !c.archived
+                    && c.parent_chat_id.is_none()
+                    && !placed.contains(&c.id)
+                    && !listed.contains(&c.id)
+            })
+            .collect();
+        never.sort_by_key(|c| std::cmp::Reverse(c.last_message_at.unwrap_or(c.created_at)));
+        for chat in never {
+            let project = project_name(chat.space_id.as_deref().unwrap_or(""));
+            out.push(item(chat, project, None));
+        }
+        out
+    }
+
+    /// Settings → Closed panes' Restore: the session goes back into the
+    /// tab it left (made active), else into its project's active tab, else
+    /// a new tab named as the old one — and comes on screen.
+    pub(super) fn hz_restore_closed(&mut self, chat: String, cx: &mut Context<Self>) {
+        let Some(key) = self.hz_project_of(&chat, cx) else {
+            return;
+        };
+        let record = self
+            .settings
+            .hz_closed
+            .iter()
+            .position(|c| c.chat == chat)
+            .map(|ix| self.settings.hz_closed.remove(ix));
+        self.settings.hz_panes = true;
+        self.hz.project = key.clone();
+        self.hz.composing = false;
+        let layout = self.settings.hz_layouts.entry(key).or_default();
+        if layout.slot_of(&chat).is_none() {
+            let back = record
+                .as_ref()
+                .filter(|r| layout.tabs.iter().any(|t| t.id == r.tab))
+                .map(|r| r.tab.clone());
+            if let Some(tab) = back {
+                layout.active = Some(tab);
+            }
+            let adopted = !layout.tabs.is_empty() && layout.adopt(&chat);
+            if !adopted {
+                self.hz_new_tab(Some(chat.clone()), cx);
+                if let Some(name) = record.map(|r| r.tab_name).filter(|n| !n.starts_with("Tab "))
+                    && let Some(tab) = self.hz_layout_mut().active_tab_mut()
+                {
+                    tab.name = name;
+                }
+            }
+        }
+        self.set_route(Route::Chat, cx);
+        self.hz_select(Some(chat), cx);
+        self.hz_save(cx);
+        cx.notify();
+    }
+
     /// Rename the session in pane `leaf` on its own tag (a double click on
     /// the tag, or the pane menu's Rename…). A new session has no title yet.
     fn hz_rename_pane(&mut self, leaf: &str, cx: &mut Context<Self>) {
@@ -1399,7 +1735,8 @@ impl Shell {
     /// another project shows.
     fn hz_remove_loose(&mut self, cx: &mut Context<Self>) {
         if let Some(layout) = self.settings.hz_layouts.remove("") {
-            for tab in &layout.tabs {
+            for (ix, tab) in layout.tabs.iter().enumerate() {
+                self.hz_note_closed("", &tab.id, &hz_tab_name(tab, ix), &tab.root.chats());
                 for leaf in tab.root.leaf_ids() {
                     self.hz.panes.remove(leaf);
                 }
@@ -1969,6 +2306,14 @@ impl Shell {
         Some(
             div()
                 .id("hz-view")
+                // The stock conversation column's focus scope, which this view
+                // replaces: a click in a reply leaves the keyboard here (not
+                // nowhere), so Ctrl+C copies the selected text.
+                .track_focus(&self.navigation_focus.main)
+                .capture_any_mouse_down(cx.listener(|this, _, window, cx| {
+                    this.capture_navigation_focus(false, false, window, cx);
+                }))
+                .on_key_down(|event, _, cx| super::navigation_focus::copy_transcript_selection(event, cx))
                 .relative()
                 .flex_1()
                 .min_w_0()
@@ -2059,11 +2404,14 @@ impl Shell {
             // (`WM_NCHITTEST`) sees every hitbox under an except-scroll one —
             // a press on a chip then moved the window and the chip drag only
             // landed on release. The strip never scrolls, so nothing is lost.
+            let menu_on = self.hz.tab_menu.as_ref().is_some_and(|(id, _)| *id == t.id);
             let mut chip = crate::surface_chrome::tab(id.clone(), selected, theme)
                 .pl(px(10.0))
                 .pr(px(4.0))
                 .occlude()
                 .relative()
+                // The chip under its open right-click menu lights up.
+                .when(menu_on, |el| el.bg(theme.accent.opacity(0.18)))
                 .child({
                     let bounds = self.hz.tab_bounds.clone();
                     let key = t.id.clone();
@@ -2333,8 +2681,12 @@ impl Shell {
             });
             (title, indicator)
         };
+        // The tag under its open right-click menu lights up too.
+        let menu_on = self.hz.pane_menu.as_ref().is_some_and(|(l, _)| *l == leaf);
         let (tag_bg, tag_fg) = if focused {
             (theme.accent, theme.on_accent)
+        } else if menu_on {
+            (theme.accent.opacity(0.35), theme.text)
         } else {
             (crate::theme::wash(0.10), theme.text_muted)
         };
@@ -2366,6 +2718,10 @@ impl Shell {
         };
         let tag = div()
             .id(SharedString::from(format!("hz-tag-{leaf}")))
+            .debug_selector({
+                let leaf = leaf.clone();
+                move || format!("hz-tag-{leaf}")
+            })
             .flex_none()
             .min_w_0()
             .h(px(24.0))
@@ -2397,13 +2753,31 @@ impl Shell {
                     .text_color(tag_fg)
                     .text_size(px(12.0))
                     .font_weight(gpui::FontWeight::MEDIUM)
-                    .child(
+                    // A running agent's logo breathes (2.4 s), in its own
+                    // cached view: the window is not re-rendered for it.
+                    .child(if running {
+                        div()
+                            .flex_none()
+                            .mr(px(5.0))
+                            .child(crate::hz_breath::breathing(
+                                format!("hz-tag-breath-{leaf}"),
+                                crate::hz_breath::Breath::Icon {
+                                    path: chip_icon,
+                                    tint: chip_tint.unwrap_or(tag_fg),
+                                    size: 14.0,
+                                },
+                                14.0,
+                                14.0,
+                            ))
+                            .into_any_element()
+                    } else {
                         icon(chip_icon)
                             .size(px(14.0))
                             .flex_none()
                             .mr(px(5.0))
-                            .text_color(chip_tint.unwrap_or(tag_fg)),
-                    )
+                            .text_color(chip_tint.unwrap_or(tag_fg))
+                            .into_any_element()
+                    })
                     .child(match editor {
                         // The field keeps its clicks: the pane under it would
                         // move focus to the composer and end the rename.
@@ -2423,17 +2797,7 @@ impl Shell {
                             .child(SharedString::from(title))
                             .into_any_element(),
                     });
-                // A running agent's tag breathes (a 2.4 s cycle).
-                if running {
-                    body.with_animation(
-                        SharedString::from(format!("hz-tag-breath-{leaf}")),
-                        gpui::Animation::new(Duration::from_millis(2400)).repeat(),
-                        |el, t| el.opacity(0.55 + 0.45 * (std::f32::consts::PI * t).sin().powi(2)),
-                    )
-                    .into_any_element()
-                } else {
-                    body.into_any_element()
-                }
+                body.into_any_element()
             });
         // The tag drags the slot: onto a sibling pane it swaps, onto a tab
         // chip it moves.
@@ -2591,7 +2955,11 @@ impl Shell {
         let (leaf, position) = self.hz.pane_menu.clone()?;
         let theme = Theme::of(cx).for_popup();
         let tab = self.hz_active()?;
-        let draft = tab.root.chat_of(&leaf).cloned().flatten().is_none();
+        let chat = tab.root.chat_of(&leaf).cloned().flatten();
+        let draft = chat.is_none();
+        let pinned = chat
+            .as_ref()
+            .is_some_and(|chat| self.active_sidebar_pins(cx).contains(chat));
         let zoomed = tab.zoom.as_deref() == Some(leaf.as_str());
         let can_zoom = tab.root.leaf_count() > 1;
         let glyph_color = theme.text_muted;
@@ -2615,12 +2983,13 @@ impl Shell {
                 "zoom" => named(icons::ZOOM_ARROWS),
                 "even" => named(icons::EVEN_PANES),
                 "rename" => named(icons::PEN),
+                "pin" => named(icons::PIN),
                 "archive" => named(icons::ARCHIVE_MINIMALISTIC),
                 _ => named(icons::CLOSE),
             };
             let enabled = match action {
                 "zoom" | "even" => can_zoom,
-                "rename" | "archive" => !draft,
+                "rename" | "archive" | "pin" => !draft,
                 _ => true,
             };
             popover::menu_row(&theme, false, id)
@@ -2654,6 +3023,13 @@ impl Shell {
             ))
             .child(row("hz-menu-even", "Even out panes", "even", false, cx))
             .child(row("hz-menu-rename", "Rename…", "rename", false, cx))
+            .child(row(
+                "hz-menu-pin",
+                if pinned { "Unpin" } else { "Pin" },
+                "pin",
+                false,
+                cx,
+            ))
             .child(row("hz-menu-archive", "Archive", "archive", false, cx))
             .child(popover::menu_separator())
             .child(row("hz-menu-close", "Close pane", "close", true, cx));

@@ -466,7 +466,7 @@ pub fn splash_overlay(theme: &Theme, fading: bool, view: EntityId, cx: &mut App)
         .gap(px(12.0))
         // hz: MimiEyes — the logo's spider (glances, blinks, hops) instead of
         // the dot spinner.
-        .child(crate::hz_splash::spider_loader("boot-splash-spider", 56.0))
+        .child(crate::hz_splash::spider_loader("boot-splash-spider", 56.0, theme.accent))
         .child(
             div()
                 .text_size(crate::typography::ui_rems(12.0))

@@ -23,6 +23,10 @@ pub mod archived;
 pub mod hz_usage;
 // hz: MimiEyes — Settings → Activity (how each run ended, VENDORED.md #7).
 pub mod hz_runs;
+// hz: MimiEyes — Settings → Closed panes (VENDORED.md #10).
+pub mod hz_closed;
+// hz: MimiEyes — Settings → About (VENDORED.md #14).
+pub mod hz_about;
 pub mod composer;
 pub mod devices;
 pub mod files;
@@ -889,6 +893,9 @@ pub struct UiSettings {
     /// hz: MimiEyes — folded keys of the tree sidebar (`dev:{id}`, `sp:{id}`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hz_tree_collapsed: Vec<String>,
+    /// hz: MimiEyes — closed panes, newest first (Settings → Closed panes).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hz_closed: Vec<crate::shell::hz_layout::HzClosed>,
     /// Custom sidebar organization, isolated between account profiles on this device.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub sidebar_sections_by_profile: HashMap<String, Vec<SidebarSection>>,
@@ -1067,6 +1074,7 @@ impl Default for UiSettings {
             hz_panes: false, // hz:
             hz_layouts: std::collections::HashMap::new(), // hz:
             hz_tree_collapsed: Vec::new(), // hz:
+            hz_closed: Vec::new(), // hz:
 
             sidebar_pinned_session_ids_by_profile: HashMap::new(),
             sidebar_sections_by_profile: HashMap::new(),
@@ -1725,6 +1733,7 @@ impl UiSettings {
             hz_panes, // hz:
             hz_layouts, // hz:
             hz_tree_collapsed, // hz:
+            hz_closed, // hz:
 
             sidebar_sections_by_profile,
             sidebar_pinned_session_ids_by_profile,
@@ -2767,6 +2776,7 @@ mod tests {
             hz_panes: false, // hz:
             hz_layouts: std::collections::HashMap::new(), // hz:
             hz_tree_collapsed: Vec::new(), // hz:
+            hz_closed: Vec::new(), // hz:
 
             sidebar_sections_by_profile: HashMap::new(),
             sidebar_pinned_session_ids_by_profile: HashMap::from([

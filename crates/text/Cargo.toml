@@ -19,6 +19,10 @@ rustc-hash = "2"
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 unicode-segmentation.workspace = true
 
+[[bench]]
+name = "layout"
+harness = false
+
 # CoreText ground-truth harness (tests/coretext.rs): same font bytes, CTFramesetter line breaks.
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 core-text = "21"

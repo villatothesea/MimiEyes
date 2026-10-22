@@ -47,6 +47,10 @@ use crate::settings::archived::ArchivedPage;
 use crate::settings::hz_usage::UsagePage;
 // hz: MimiEyes — Settings → Activity.
 use crate::settings::hz_runs::RunsPage;
+// hz: MimiEyes — Settings → Closed panes.
+use crate::settings::hz_closed::{ClosedPanesEvent, ClosedPanesPage};
+// hz: MimiEyes — Settings → About.
+use crate::settings::hz_about::AboutPage;
 use crate::settings::devices::DevicesPage;
 use crate::settings::files::{FilesSettingsEvent, FilesSettingsPage};
 use crate::settings::harnesses::HarnessesPage;
@@ -571,11 +575,15 @@ pub enum SettingsSection {
     Usage,
     /// hz: MimiEyes — how each run ended (the activity monitor).
     Activity,
+    /// hz: MimiEyes — sessions no pane shows, restorable into their tab.
+    ClosedPanes,
+    /// hz: MimiEyes — what the app is, what it is built on, where its files are.
+    About,
 }
 
 impl SettingsSection {
     /// Sections shown in Settings. `Agents` is a legacy Accounts route alias.
-    pub const ALL: [SettingsSection; 12] = [
+    pub const ALL: [SettingsSection; 14] = [
         SettingsSection::General,
         SettingsSection::Appearance,
         SettingsSection::Notifications,
@@ -586,8 +594,10 @@ impl SettingsSection {
         SettingsSection::Files,
         SettingsSection::Appshots,
         SettingsSection::Archived,
+        SettingsSection::ClosedPanes, // hz:
         SettingsSection::Usage, // hz:
         SettingsSection::Activity, // hz:
+        SettingsSection::About, // hz:
     ];
 
     /// The former Accounts page is folded into Providers. Keep its route alias
@@ -632,6 +642,8 @@ impl SettingsSection {
             SettingsSection::Archived => "archived",
             SettingsSection::Usage => "usage", // hz:
             SettingsSection::Activity => "activity", // hz:
+            SettingsSection::ClosedPanes => "closed-panes", // hz:
+            SettingsSection::About => "about", // hz:
         }
     }
 
@@ -651,6 +663,8 @@ impl SettingsSection {
             "archived" => SettingsSection::Archived,
             "usage" => SettingsSection::Usage, // hz:
             "activity" => SettingsSection::Activity, // hz:
+            "closed-panes" => SettingsSection::ClosedPanes, // hz:
+            "about" => SettingsSection::About, // hz:
             _ => return None,
         })
     }
@@ -678,6 +692,8 @@ impl SettingsSection {
             SettingsSection::Archived => "Archived sessions",
             SettingsSection::Usage => "Usage", // hz:
             SettingsSection::Activity => "Activity", // hz:
+            SettingsSection::ClosedPanes => "Closed panes", // hz:
+            SettingsSection::About => "About", // hz:
         }
     }
 }
@@ -2102,6 +2118,10 @@ pub struct Shell {
     usage_page: Option<Entity<UsagePage>>,
     /// hz: MimiEyes — Settings → Activity.
     runs_page: Option<Entity<RunsPage>>,
+    /// hz: MimiEyes — Settings → Closed panes, and its Restore events.
+    closed_panes_page: Option<(Entity<ClosedPanesPage>, Subscription)>,
+    /// hz: MimiEyes — Settings → About.
+    about_page: Option<Entity<AboutPage>>,
     appearance_page: Option<Entity<AppearancePage>>,
     files_settings_page: Option<Entity<FilesSettingsPage>>,
     notifications_page: Option<Entity<NotificationsPage>>,
@@ -2621,6 +2641,8 @@ impl Shell {
             archived_page: None,
             usage_page: None, // hz:
             runs_page: None, // hz:
+            closed_panes_page: None, // hz:
+            about_page: None, // hz:
             appearance_page: None,
             files_settings_page: None,
             notifications_page: None,
@@ -5854,6 +5876,45 @@ impl Shell {
                     None => Empty.into_any_element(),
                 }
             }
+            // hz: MimiEyes — every session no pane shows; Restore puts one
+            // back into its tab.
+            SettingsSection::ClosedPanes => {
+                if self.closed_panes_page.is_none() {
+                    let page = cx.new(ClosedPanesPage::new);
+                    let sub = cx.subscribe(&page, |this, _, event: &ClosedPanesEvent, cx| {
+                        match event {
+                            ClosedPanesEvent::Restore(chat) => {
+                                this.hz_restore_closed(chat.clone(), cx)
+                            }
+                            // The stock "Delete session?" confirmation.
+                            ClosedPanesEvent::Delete(chat) => {
+                                this.delete_confirm = Some(chat.clone());
+                                cx.notify();
+                            }
+                        }
+                    });
+                    self.closed_panes_page = Some((page, sub));
+                }
+                let items = self.hz_closed_items(cx);
+                match &self.closed_panes_page {
+                    Some((page, _)) => {
+                        page.update(cx, |page, _| page.set_items(items));
+                        page.clone().into_any_element()
+                    }
+                    None => Empty.into_any_element(),
+                }
+            }
+            // hz: MimiEyes — what the app is and where its files are.
+            SettingsSection::About => {
+                if self.about_page.is_none() {
+                    let data_dir = self.data_dir.clone();
+                    self.about_page = Some(cx.new(|cx| AboutPage::new(data_dir, cx)));
+                }
+                match &self.about_page {
+                    Some(page) => page.clone().into_any_element(),
+                    None => Empty.into_any_element(),
+                }
+            }
             // hz: MimiEyes — how each run ended.
             SettingsSection::Activity => {
                 if self.runs_page.is_none() {
@@ -6016,6 +6077,9 @@ impl Shell {
             .find(|c| c.id == rename.chat_id)
             .is_none_or(|c| c.title.as_deref() == Some(title.as_str()));
         if commit && !title.is_empty() && !unchanged {
+            // hz: the new title shows at once (VENDORED.md #19).
+            self.state
+                .update(cx, |state, cx| state.hz_rename_optimistic(&rename.chat_id, &title, cx));
             self.mutate(
                 serde_json::json!({ "op": "renameChat", "chatId": rename.chat_id, "title": title }),
                 cx,
@@ -7957,7 +8021,9 @@ impl Shell {
             SettingsSection::General => icons::SETTINGS,
             SettingsSection::Appshots => icons::MONITOR,
             SettingsSection::Archived => icons::ARCHIVE_MINIMALISTIC,
-            SettingsSection::Usage => icons::FILE_DATA, // hz:
+            SettingsSection::Usage => icons::CHART, // hz:
+            SettingsSection::ClosedPanes => icons::EVEN_PANES, // hz:
+            SettingsSection::About => icons::INFO_CIRCLE, // hz:
             SettingsSection::Activity => icons::CLOCK_CIRCLE, // hz:
         };
         settings::widgets::scroll_faded(
@@ -10824,6 +10890,7 @@ impl Shell {
         overlays.extend(self.render_hz_pane_menu(cx));
         overlays.extend(self.render_hz_tab_menu(cx));
         overlays.extend(self.render_hz_loose_menu(cx));
+        overlays.extend(self.render_hz_plus_menu(cx));
 
         overlays.extend(self.render_space_overlays(viewport, window, cx));
         overlays.extend(self.render_section_overlays(viewport, window, cx));
@@ -13308,6 +13375,10 @@ impl Render for Shell {
         // hz: keep workspace/tabs/panes and the selected chat consistent
         // before the titlebar strip and the pane view draw.
         self.hz_sync(cx);
+        // hz: frames slower than 60 ms leave a line in the log.
+        crate::hz_perf::time_frame(window, "window", 60);
+        // hz: the window/taskbar icon wears the accent (no-op unless it changed).
+        crate::hz_window_icon::sync(window, Theme::of(cx).accent);
         self.navigation_focus
             .remember(&self.shortcut_focus, window, cx);
         if let Some(command) = self.pending_workspace_command.take() {

@@ -315,11 +315,20 @@ impl EngineHandle {
         // serving IPC at probe time (a daemon mid-start): wait for its
         // listener, re-trying the lock in case it dies instead.
         std::fs::create_dir_all(&engine_config.data_dir)?;
-        let lock_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        // hz: MimiEyes — a previous MimiEyes still shutting down holds the dir
+        // for a while after its window closed (its IPC listener already gone):
+        // wait for it (stock: 5 s, then a window with no engine). VENDORED.md #23.
+        let lock_deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+        let mut hz_waited = false;
         let lock = loop {
             match InstanceLock::acquire(&engine_config.data_dir) {
                 Ok(lock) => break lock,
                 Err(err) => {
+                    // hz: once, so the log says what the wait was for.
+                    if !hz_waited {
+                        hz_waited = true;
+                        tracing::info!("waiting for the previous MimiEyes to finish closing: {err}");
+                    }
                     if std::time::Instant::now() >= lock_deadline {
                         return Err(err.into());
                     }
@@ -808,6 +817,10 @@ pub struct AppState {
     /// judge by the empty pre-sync lists.
     pub chats_synced: bool,
     pub spaces_synced: bool,
+    /// hz: MimiEyes — renames still on their way through the engine: shown
+    /// at once, kept over older rows until a chats frame carries them (or
+    /// 30 s pass). VENDORED.md #19.
+    hz_pending_titles: HashMap<String, (String, std::time::Instant)>,
     pending_deep_link: Option<crate::links::ConversationDeepLink>,
     deep_link_notice: Option<String>,
     /// Joined transcript of the selected chat (continuations folded engine-side).
@@ -977,6 +990,7 @@ impl AppState {
             auto_selected: false,
             chats_synced: false,
             spaces_synced: false,
+            hz_pending_titles: HashMap::new(), // hz:
             pending_deep_link: None,
             deep_link_notice: None,
         }
@@ -1157,6 +1171,18 @@ impl AppState {
     /// each notify re-renders the whole shell.
     pub fn apply_chats(&mut self, mut chats: Vec<Chat>) -> bool {
         let mut changed = false;
+        // hz: a rename in flight keeps its new title over an older row.
+        self.hz_pending_titles.retain(|id, (title, at)| {
+            let confirmed = chats
+                .iter()
+                .any(|c| &c.id == id && c.title.as_deref() == Some(title.as_str()));
+            !confirmed && at.elapsed() < std::time::Duration::from_secs(30)
+        });
+        for chat in &mut chats {
+            if let Some((title, _)) = self.hz_pending_titles.get(&chat.id) {
+                chat.title = Some(title.clone());
+            }
+        }
         if let Some(pending) = &self.pending_side_chat {
             if chats.iter().any(|chat| chat.id == pending.id) {
                 self.pending_side_chat = None;
@@ -2449,6 +2475,10 @@ impl AppState {
         state.spaces = source.spaces.clone();
         state.devices = source.devices.clone();
         state.data_dir = source.data_dir.clone();
+        // hz: MimiEyes — this device's id, so the side state's pickers and
+        // usage ring target this device instead of reading it as remote (a
+        // pane's picker then shares the window's catalogs; VENDORED.md #16).
+        state.local_device_id = source.local_device_id.clone();
         state.auto_selected = true;
         state.pending_side_chat = Some(chat.clone());
         state.unsaved_side_chat = unsaved;
@@ -2975,6 +3005,18 @@ impl AppState {
         .detach();
     }
 
+    /// hz: MimiEyes — show a rename at once (the engine's round trip can
+    /// lag behind a busy run); the next chats frames keep it until they carry
+    /// it themselves.
+    pub(crate) fn hz_rename_optimistic(&mut self, chat_id: &str, title: &str, cx: &mut Context<Self>) {
+        self.hz_pending_titles
+            .insert(chat_id.to_owned(), (title.to_owned(), std::time::Instant::now()));
+        if let Some(chat) = self.chats.iter_mut().find(|c| c.id == chat_id) {
+            chat.title = Some(title.to_owned());
+        }
+        cx.notify();
+    }
+
     pub fn mark_chat_seen(&mut self, chat_id: &str, cx: &mut Context<Self>) {
         let Some(chat) = self.chats.iter_mut().find(|c| c.id == chat_id) else {
             return;
@@ -3359,6 +3401,16 @@ fn spawn_transcript_watch(
                 preparation = next_preparation;
                 let mut desync = false;
                 let alive = this.update(cx, |state, cx| {
+                    // hz: the main thread's share of a transcript update
+                    // (pane states are side states; the window's own is "main").
+                    let _hz_timer = crate::hz_perf::Timer::new(
+                        "transcript update",
+                        format!(
+                            "{} {chat_id}",
+                            if state.pending_side_chat.is_some() { "pane" } else { "main" }
+                        ),
+                        8,
+                    );
                     // Guard against a stale pump racing a newer selection.
                     if state.selected_chat.as_deref() == Some(chat_id.as_str()) {
                         if history_pending && state.transcript_replayed {
@@ -3434,6 +3486,16 @@ fn spawn_queue_watch(
                     }
                 };
                 let alive = this.update(cx, |state, cx| {
+                    // hz: the main thread's share of a transcript update
+                    // (pane states are side states; the window's own is "main").
+                    let _hz_timer = crate::hz_perf::Timer::new(
+                        "transcript update",
+                        format!(
+                            "{} {chat_id}",
+                            if state.pending_side_chat.is_some() { "pane" } else { "main" }
+                        ),
+                        8,
+                    );
                     // Guard against a stale pump racing a newer selection.
                     if state.selected_chat.as_deref() == Some(chat_id.as_str()) {
                         state.apply_queue(frame.items);
@@ -5068,6 +5130,23 @@ mod tests {
             state.project_device_tag(&notes, Utc::now()).0,
             state.space_device_tag(notes[0], Utc::now()).0
         );
+    }
+
+    #[test]
+    fn hz_a_rename_in_flight_survives_older_rows() {
+        let mut state = AppState::new();
+        state.apply_chats(vec![chat("a", 0, None)]);
+        state
+            .hz_pending_titles
+            .insert("a".into(), ("Renamed".into(), std::time::Instant::now()));
+        // An older frame (before the engine applied the rename) keeps it.
+        state.apply_chats(vec![chat("a", 0, None)]);
+        assert_eq!(state.chats[0].title.as_deref(), Some("Renamed"));
+        // The frame that carries it retires the override.
+        let mut confirmed = chat("a", 0, None);
+        confirmed.title = Some("Renamed".into());
+        state.apply_chats(vec![confirmed]);
+        assert!(state.hz_pending_titles.is_empty());
     }
 
     #[test]

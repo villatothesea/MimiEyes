@@ -773,6 +773,28 @@ pub fn default_registry() -> HarnessRegistry {
         Box::new(|| zeron_harness::AcpHarness::antigravity().installed()),
         Box::new(|| Ok(Arc::new(zeron_harness::AcpHarness::antigravity()) as Arc<dyn Harness>)),
     );
+    // hz: MimiEyes — DeepSeek Harness over ACP (`dsh --profile acp`), same
+    // lazy pattern; the descriptor mirrors AcpHarness::deepseek(): turn
+    // boundaries, effort off / low / high / max (VENDORED.md #15).
+    registry.register_lazy(
+        HarnessDescriptor {
+            id: HarnessId::Deepseek,
+            name: "DeepSeek".into(),
+            supports_steering: true,
+            steering_mode: SteeringMode::TurnBoundary,
+            reasoning_levels: vec![
+                ReasoningLevel::Minimal,
+                ReasoningLevel::Low,
+                ReasoningLevel::High,
+                ReasoningLevel::Max,
+            ],
+            installed: true,
+            can_install: false,
+            enabled: None,
+        },
+        Box::new(|| zeron_harness::AcpHarness::deepseek().installed()),
+        Box::new(|| Ok(Arc::new(zeron_harness::AcpHarness::deepseek()) as Arc<dyn Harness>)),
+    );
     registry
 }
 
@@ -854,8 +876,11 @@ mod tests {
                 HarnessId::Grok,
                 HarnessId::Hermes,
                 HarnessId::Pi,
+                // hz: the PiRustDurable port and DeepSeek Harness.
+                HarnessId::Pirust,
                 HarnessId::Opencode,
-                HarnessId::Antigravity
+                HarnessId::Antigravity,
+                HarnessId::Deepseek
             ]
         );
         assert!(registry.resolve(HarnessId::Mock).is_ok());

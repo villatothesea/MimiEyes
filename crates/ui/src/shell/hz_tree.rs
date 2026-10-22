@@ -49,6 +49,13 @@ struct TreeChat {
     harness: zeron_proto::HarnessId,
     /// When it last spoke (its creation, before the first message).
     at: chrono::DateTime<Utc>,
+    /// It said something since it was last looked at (and is done talking).
+    unread: bool,
+}
+
+/// What a row under an open right-click menu wears.
+fn menu_wash(theme: &Theme) -> gpui::Hsla {
+    theme.accent.opacity(0.18)
 }
 
 /// Aggregate marks prefer attention: needs-you > error > working > done > idle.
@@ -161,6 +168,7 @@ impl Shell {
                     .map(|c| c.harness)
                     .unwrap_or(zeron_proto::HarnessId::ClaudeCode),
                 at: chat.last_message_at.unwrap_or(chat.created_at),
+                unread: chat.unseen() && indicator != zeron_proto::ChatIndicator::Working,
             };
             // Every live session (side chats included: panes may hold them).
             let all_chats: HashMap<String, TreeChat> = state
@@ -555,15 +563,37 @@ impl Shell {
         let menu_space = Some(project.to_owned()).filter(|p| real && !p.is_empty());
         // This machine's "No project" has its own menu (new session, remove).
         let loose_menu = project.is_empty();
+        let menu_on = self
+            .space_menu
+            .get()
+            .is_some_and(|(space, _)| space == project)
+            || (loose_menu && self.hz.loose_menu.is_some())
+            || self.hz.plus_menu.as_ref().is_some_and(|(key, _)| key == project);
         let group = SharedString::from(format!("hz-tree-ws-group-{project}"));
+        // "+": a menu — a new session, or a new layout of several.
         let plus = real.then(|| {
-            Self::hz_tree_plus(
-                SharedString::from(format!("hz-tree-new-{project}")),
-                group.clone(),
-                theme,
-                move |this, cx| this.hz_new_session_in_project(new_project.clone(), cx),
-                cx,
-            )
+            div()
+                .id(SharedString::from(format!("hz-tree-new-{project}")))
+                .flex_none()
+                .size(px(18.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(4.0))
+                .opacity(0.0)
+                .group_hover(group.clone(), |st| st.opacity(1.0))
+                .hover(|st| st.bg(crate::theme::wash(0.10)))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        this.hz.plus_menu = Some((new_project.clone(), event.position));
+                        cx.notify();
+                    }),
+                )
+                .on_click(|_, _, cx| cx.stop_propagation())
+                .child(icon(icons::PLUS).size(px(13.0)).text_color(theme.text_muted))
+                .into_any_element()
         });
         let row = div()
             .id(SharedString::from(format!("hz-tree-ws-{project}")))
@@ -582,8 +612,8 @@ impl Shell {
             } else {
                 theme.text
             })
-            .when(current, |el| el.bg(crate::theme::wash(0.04)))
             .hover(|st| st.bg(crate::theme::wash(0.05)))
+            .when(menu_on, |el| el.bg(menu_wash(theme)))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.hz_open_project(open_project.clone(), latest.clone(), cx);
             }))
@@ -632,13 +662,7 @@ impl Shell {
                 body.push(branch(&[], ix == last, row, line));
             }
         } else {
-            let placed: std::collections::HashSet<String> =
-                tabs.iter().flat_map(|t| t.root.chats()).collect();
-            let others: Vec<TreeChat> = chats
-                .iter()
-                .filter(|c| !placed.contains(&c.id))
-                .cloned()
-                .collect();
+            // Sessions no pane shows are listed in Settings → Closed panes.
             let active = self
                 .settings
                 .hz_layouts
@@ -647,17 +671,16 @@ impl Shell {
                 .map(|t| t.id.clone());
             let tab_count = tabs.len();
             for (ix, tab) in tabs.iter().enumerate() {
-                let last = ix + 1 == tab_count && others.is_empty();
+                let last = ix + 1 == tab_count;
                 let on_screen = current && active.as_deref() == Some(tab.id.as_str());
                 body.extend(self.hz_tree_tab(project, ix, tab, last, on_screen, all_chats, theme, cx));
-            }
-            if !others.is_empty() {
-                body.extend(self.hz_tree_others(project, &others, selected, theme, cx));
             }
         }
         div()
             .flex()
             .flex_col()
+            .rounded(px(9.0))
+            .when(current, |el| el.bg(crate::theme::wash(0.035)))
             .child(row)
             .child(self.hz_fold_body(&key, open, body))
             .into_any_element()
@@ -685,18 +708,44 @@ impl Shell {
         // panes are up to in the dots' 12px slot (kept empty while all are
         // idle), the place number in the CLI logos' 14px slot, then the name
         // where the session titles start.
-        let status_mark = match status {
-            Some(status) => self.hz_mark(format!("hz-tree-tabmark-{}", tab.id), status, theme, cx),
-            None => div().flex_none().w(px(12.0)).into_any_element(),
-        };
-        let number = div()
+        // The tab's place: a white number on a square of its status colour
+        // (the accent while idle; breathing while a pane works), centred on
+        // the session dots' column below.
+        let menu_on = self.hz.tab_menu.as_ref().is_some_and(|(t, _)| *t == tab.id);
+        let indicator = status.unwrap_or(zeron_proto::ChatIndicator::Idle);
+        let square = div()
             .flex_none()
-            .w(px(14.0))
+            .min_w(px(16.0))
+            .h(px(16.0))
+            .px(px(3.0))
+            .rounded(px(4.0))
             .flex()
+            .items_center()
             .justify_center()
-            .text_size(px(11.0))
-            .text_color(theme.text_faint)
+            .bg(Self::hz_status_color(indicator, theme))
+            .text_color(gpui::white())
+            .text_size(px(10.5))
+            .font_weight(gpui::FontWeight::SEMIBOLD)
             .child(SharedString::from((place + 1).to_string()));
+        // Breathing runs in its own cached view: the window is not
+        // re-rendered for it.
+        let number: AnyElement = if indicator == zeron_proto::ChatIndicator::Working {
+            let digits = (place + 1).to_string();
+            let w = if digits.len() > 1 { 22.0 } else { 16.0 };
+            crate::hz_breath::breathing(
+                format!("hz-tree-tabnum-{}", tab.id),
+                crate::hz_breath::Breath::Square {
+                    text: SharedString::from(digits),
+                    bg: Self::hz_status_color(indicator, theme),
+                    fg: gpui::white(),
+                },
+                w,
+                16.0,
+            )
+            .into_any_element()
+        } else {
+            square.into_any_element()
+        };
         let group = SharedString::from(format!("hz-tree-tab-group-{}", tab.id));
         let ids = (project.to_owned(), tab.id.clone());
         let (click, dbl, menu, plus_ids) = (ids.clone(), ids.clone(), ids.clone(), ids.clone());
@@ -742,8 +791,8 @@ impl Shell {
             .cursor_pointer()
             .text_size(px(13.0))
             .text_color(theme.text)
-            .when(on_screen, |el| el.bg(crate::theme::wash(0.07)))
             .hover(|st| st.bg(crate::theme::wash(0.05)))
+            .when(menu_on, |el| el.bg(menu_wash(theme)))
             .on_click(cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
                 if event.click_count() >= 2 {
                     this.hz_tree_rename_tab(&dbl.0, &dbl.1, window, cx);
@@ -759,8 +808,8 @@ impl Shell {
                 }),
             )
             .child(self.hz_tree_fold_button(&key, open, theme, cx))
-            .child(status_mark)
-            .child(number)
+            // In the dots' 12px column, centred on them (it overhangs a little).
+            .child(div().flex_none().w(px(12.0)).flex().justify_center().child(number))
             .child(label)
             .child(plus)
             .child(Self::hz_tree_pill(tab.root.leaf_count(), theme));
@@ -854,6 +903,11 @@ impl Shell {
                 .into_any_element(),
         };
         let short = chat.map(|id| id.chars().take(8).collect::<String>());
+        let menu_on = self.hz.pane_menu.as_ref().is_some_and(|(l, _)| l == leaf);
+        let pin = chat.map(|id| self.hz_tree_pin_button(id, &group, theme, cx));
+        let age_label = row_chat
+            .as_ref()
+            .map(|c| self.hz_tree_age(&format!("pane-{leaf}"), c, theme));
         let row = div()
             .id(SharedString::from(format!("hz-tree-pane-{leaf}")))
             .group(group.clone())
@@ -869,8 +923,9 @@ impl Shell {
             .cursor_pointer()
             .text_size(px(13.0))
             .text_color(theme.text)
-            .when(focused, |el| el.bg(crate::theme::wash(0.09)))
             .hover(|st| st.bg(crate::theme::wash(0.05)))
+            .when(focused, |el| el.bg(crate::theme::wash(0.08)))
+            .when(menu_on, |el| el.bg(menu_wash(theme)))
             .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
                 if event.click_count() >= 2
                     && let Some(chat) = &rename
@@ -900,14 +955,8 @@ impl Shell {
                     .text_color(theme.text_faint)
                     .child(SharedString::from(short))
             }))
-            .children(row_chat.as_ref().map(|c| {
-                div()
-                    .flex_none()
-                    .ml(px(2.0))
-                    .text_size(px(11.0))
-                    .text_color(theme.text_faint)
-                    .child(SharedString::from(age(c.at, Utc::now())))
-            }));
+            .children(pin)
+            .children(age_label);
         let row = match chat {
             Some(chat) => self.hz_tree_row_drag(row, chat, theme, cx),
             None => row,
@@ -915,62 +964,69 @@ impl Shell {
         row.into_any_element()
     }
 
-    /// "Other sessions (n)": the project's sessions no pane shows, folded
-    /// by default (the tabs stay compact; the rest is one click away).
-    fn hz_tree_others(
-        &mut self,
-        project: &str,
-        chats: &[TreeChat],
-        selected: &Option<String>,
+    /// A session row's pin: shown on hover (always, in accent, when pinned);
+    /// a click pins or unpins (Zeron's pin, as its row menu does).
+    fn hz_tree_pin_button(
+        &self,
+        chat: &str,
+        group: &SharedString,
         theme: &Theme,
         cx: &mut Context<Self>,
-    ) -> Vec<AnyElement> {
-        let line = theme.text_faint.opacity(0.45);
-        let key = format!("other:{project}");
-        // Folded unless the user opened it (the opened set is stored inverted).
-        let opened_key = format!("open:{key}");
-        let open = self.hz_collapsed(&opened_key);
-        let toggle = opened_key.clone();
-        let row = div()
-            .id(SharedString::from(format!("hz-tree-others-{project}")))
-            .h(px(PANE_ROW_H))
-            .flex_1()
-            .min_w_0()
-            .mb(px(1.0))
-            .px(px(8.0))
+    ) -> AnyElement {
+        let pinned = self.active_sidebar_pins(cx).iter().any(|id| id == chat);
+        let id = chat.to_owned();
+        div()
+            .id(SharedString::from(format!("hz-tree-pin-{chat}")))
+            .flex_none()
+            .size(px(18.0))
             .flex()
             .items_center()
-            .gap(px(8.0))
-            .rounded(px(7.0))
-            .cursor_pointer()
-            .text_size(px(12.5))
-            .text_color(theme.text_muted)
-            .hover(|st| st.bg(crate::theme::wash(0.05)))
-            .on_click(cx.listener(move |this, _, _, cx| this.hz_toggle_fold(&toggle, cx)))
+            .justify_center()
+            .rounded(px(4.0))
+            .when(!pinned, |el| el.opacity(0.0).group_hover(group.clone(), |st| st.opacity(1.0)))
+            .hover(|st| st.bg(crate::theme::wash(0.10)))
+            .tooltip(crate::settings::widgets::text_tooltip(if pinned { "Unpin" } else { "Pin" }))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(move |this, _, _, cx| {
+                cx.stop_propagation();
+                this.set_chat_pinned(id.clone(), !pinned, cx);
+            }))
             .child(
-                div()
-                    .flex_none()
-                    .size(px(16.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(self.hz_chevron(&opened_key, open, theme)),
+                icon(icons::PIN)
+                    .size(px(12.0))
+                    .text_color(if pinned { theme.accent } else { theme.text_muted }),
             )
-            .child(div().flex_1().min_w_0().truncate().child("Other sessions"))
-            .child(Self::hz_tree_pill(chats.len(), theme))
-            .into_any_element();
-        let mut out = vec![branch(&[], true, row, line)];
-        let last = chats.len().saturating_sub(1);
-        let rows: Vec<AnyElement> = chats
-            .iter()
-            .enumerate()
-            .map(|(ix, chat)| {
-                let row = self.hz_tree_chat_row(chat, selected, theme, cx);
-                branch(&[false], ix == last, row, line)
-            })
-            .collect();
-        out.push(self.hz_fold_body(&opened_key, open, rows));
-        out
+            .into_any_element()
+    }
+
+    /// A session row's age; unread (it spoke since you last looked) it is
+    /// accent, bold and breathing until the session is opened.
+    fn hz_tree_age(&self, key: &str, chat: &TreeChat, theme: &Theme) -> AnyElement {
+        let label = div()
+            .flex_none()
+            .ml(px(2.0))
+            .text_size(px(11.0))
+            .child(SharedString::from(age(chat.at, Utc::now())));
+        if !chat.unread {
+            return label.text_color(theme.text_faint).into_any_element();
+        }
+        // Breathing runs in its own cached view (the window is not
+        // re-rendered for it); ages are at most three characters.
+        div()
+            .flex_none()
+            .ml(px(2.0))
+            .child(crate::hz_breath::breathing(
+                format!("hz-tree-unread-{key}"),
+                crate::hz_breath::Breath::Text {
+                    text: SharedString::from(age(chat.at, Utc::now())),
+                    color: theme.accent,
+                    size: 11.0,
+                    bold: true,
+                },
+                26.0,
+                16.0,
+            ))
+            .into_any_element()
     }
 
     /// A session row: mark, CLI logo, title, age. Same actions as a stock
@@ -989,6 +1045,10 @@ impl Shell {
         let mark = self.hz_mark(format!("hz-tree-mark-{id}"), chat.status, theme, cx);
         let (harness, tint) = crate::pickers::harness_brand_icon(chat.harness);
         let (open_id, menu_id, sel_id) = (id.clone(), id.clone(), id.clone());
+        let menu_on = self.chat_menu.get().is_some_and(|m| m.chat_id == id);
+        let group = SharedString::from(format!("hz-tree-chat-group-{id}"));
+        let pin = self.hz_tree_pin_button(&id, &group, theme, cx);
+        let age_label = self.hz_tree_age(&format!("chat-{id}"), chat, theme);
         let label = match editor {
             Some(input) => chat_title_editor(
                 SharedString::from(format!("hz-tree-editor-{id}")),
@@ -1005,6 +1065,7 @@ impl Shell {
         let row = div()
             .id(SharedString::from(format!("hz-tree-chat-{id}")))
             .debug_selector(move || format!("session-row-{sel_id}"))
+            .group(group)
             .h(px(PANE_ROW_H))
             .flex_1()
             .min_w_0()
@@ -1017,8 +1078,9 @@ impl Shell {
             .cursor_pointer()
             .text_size(px(13.0))
             .text_color(theme.text)
-            .when(is_selected, |el| el.bg(crate::theme::wash(0.09)))
             .hover(|st| st.bg(crate::theme::wash(0.05)))
+            .when(is_selected, |el| el.bg(crate::theme::wash(0.08)))
+            .when(menu_on, |el| el.bg(menu_wash(theme)))
             .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
                 if event.click_count() >= 2 {
                     this.open_rename_chat(open_id.clone(), cx);
@@ -1046,14 +1108,8 @@ impl Shell {
                     .text_color(tint.unwrap_or(theme.text_muted)),
             )
             .child(label)
-            .child(
-                div()
-                    .flex_none()
-                    .ml(px(6.0))
-                    .text_size(px(11.0))
-                    .text_color(theme.text_faint)
-                    .child(SharedString::from(age(chat.at, Utc::now()))),
-            );
+            .child(pin)
+            .child(age_label);
         // HerdrGui's pane drag: the row drags like the pane's name tag, and a
         // drag let go on it swaps or moves into its tab.
         self.hz_tree_row_drag(row, &id, theme, cx).into_any_element()

@@ -1860,6 +1860,8 @@ impl RpcService for AuthRpc {
 #[async_trait]
 impl RpcService for EngineRpc {
     async fn handle(&self, method: &str, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+        // hz: slow requests are logged with their method (VENDORED.md #20).
+        let _hz_timer = crate::hz_lap::RpcTimer::new(method);
         // Device-addressed routing: forward calls that target another device over its
         // relay. The target compares the id to its own, so forwards cannot loop.
         if forwardable(method)
@@ -1942,11 +1944,15 @@ impl RpcService for EngineRpc {
             }
             methods::LIST_MODELS => {
                 let p: ListModelsParams = parse_params(params)?;
+                // hz: where a slow model list spends its time.
+                let mut hz_lap = crate::hz_lap::Lap::new();
                 let lease = std::sync::Arc::new(self.registry.execution_lease(p.harness).await);
+                hz_lap.mark("ListModels: execution lease");
                 let harness = self
                     .registry
                     .resolve(p.harness)
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
+                hz_lap.mark("ListModels: resolve harness");
                 let models = crate::model_catalogs::list_with_lease(
                     self.repos.data_dir(),
                     harness,
@@ -1955,6 +1961,7 @@ impl RpcService for EngineRpc {
                 )
                 .await
                 .map_err(|e| RpcError::Failed(e.to_string()))?;
+                hz_lap.mark("ListModels: catalog");
                 RpcReply::value(&models)
             }
             methods::LIST_SKILLS => {

@@ -29,6 +29,10 @@ pub mod harness_updates;
 pub mod hz_relay;
 // hz: MimiEyes — per-turn token ledger for Settings → Usage (VENDORED.md #3).
 pub mod hz_usage;
+// hz: MimiEyes — engine assembly stopwatch (VENDORED.md #18).
+pub(crate) mod hz_lap;
+// hz: MimiEyes — process starts that don't stall the runtime (VENDORED.md #24).
+mod hz_spawn;
 pub(crate) mod home_index;
 mod http_error;
 pub mod instance_lock;
@@ -224,18 +228,24 @@ impl EngineCore {
         edge: Option<EdgeConfig>,
         lock: InstanceLock,
     ) -> Result<Self, EngineError> {
+        // hz: each slow step is logged (hz_lap).
+        let mut hz_lap = crate::hz_lap::Lap::new();
         let data_dir = profile.device_root();
         std::fs::create_dir_all(data_dir)?;
         let legacy_uploads_root = profile.claim_legacy_uploads_root()?;
         let device_id = load_or_create_device_id(data_dir)?;
+        hz_lap.mark("device id");
         // hz: the token ledger lives with this profile's data.
         crate::hz_usage::init(data_dir);
         // This device's harness enablement (Settings → Providers) rides the
         // engine data dir — per-device, like the CLI installs it gates.
         registry.load_prefs(data_dir);
+        hz_lap.mark("harness prefs");
         let store = Arc::new(DocsStore::open(profile.store_root())?);
+        hz_lap.mark("docs store");
         let store_for_import = store.clone();
         let journal = Arc::new(RunJournal::open(profile.store_root().join("journals"))?);
+        hz_lap.mark("run journal");
         let sessions = SessionsEngine::new(device_id.clone(), journal, registry.clone());
         let doc_host = DocHost::new(
             store.clone(),
@@ -260,20 +270,26 @@ impl EngineCore {
         doc_host.set_workspace(workspace.clone());
         doc_host.set_sessions(sessions.clone());
         sessions.set_doc_host(doc_host.clone());
+        hz_lap.mark("workspace host");
         match sessions.recover_stale() {
             Ok(0) => {}
             Ok(recovered) => tracing::info!(recovered, "stale sessions recovered on boot"),
             Err(err) => tracing::error!(error = %err, "stale-session recovery failed"),
         }
+            hz_lap.mark("session recovery");
         doc_host.spawn_transcript_salvage(profile.store_root().join("journals"));
+        hz_lap.mark("transcript salvage");
         let repos = Repos::new(data_dir, &device_id);
         sessions.set_scratch_root(repos.scratch_root());
         doc_host.set_repos(repos.clone());
         let change_requests = CheckoutChangeRequests::start(repos.clone(), &device_id);
+        hz_lap.mark("change requests");
         let workspace_files =
             WorkspaceFiles::new(repos.clone(), workspace.clone(), device_id.clone());
+        hz_lap.mark("workspace files");
         let terminals = Terminals::new();
         let project_actions = ProjectActionsStore::open(profile.store_root())?;
+        hz_lap.mark("project actions");
         doc_host.set_project_action_runtime(project_actions.clone(), terminals.clone());
         let previews = zeron_preview::PreviewService::new(
             profile.store_root().join("previews.json"),
@@ -281,6 +297,7 @@ impl EngineCore {
             local_device_name(&device_id),
         )
         .map_err(|e| EngineError::Other(e.to_string()))?;
+        hz_lap.mark("previews");
         let uploads = Uploads::from_root_with_fallback(
             profile.uploads_root(),
             legacy_uploads_root.as_deref(),
@@ -298,6 +315,7 @@ impl EngineCore {
         // against this store and pushes staged bytes to remote hosts.
         doc_host.set_uploads(uploads.clone());
         let agent_accounts_config = AgentAccountsConfig::detect(data_dir);
+        hz_lap.mark("agent accounts detect");
         sessions.set_generated_images(
             uploads.clone(),
             agent_accounts_config.codex_home.join("generated_images"),
@@ -318,21 +336,25 @@ impl EngineCore {
         // the P2P service, which serves it to that device alone.
         let agent_accounts =
             AgentAccounts::with_callback_routes(agent_accounts_config, previews.callback_routes());
+        hz_lap.mark("agent accounts");
         let harness_updates =
             harness_updates::HarnessUpdateCoordinator::new(data_dir, registry.clone());
         harness_updates.start();
+        hz_lap.mark("harness updates");
         sessions.set_titles(TitleGenerator::new(
             workspace.clone(),
             registry.clone(),
             repos.clone(),
         ));
         let diff_sync = CheckoutDiffSync::start(repos.clone(), workspace.clone(), &device_id, edge);
+        hz_lap.mark("diff sync");
         // Turn starts snapshot the checkout tree — the "Latest turn" diff base.
         let turn_diff = diff_sync.clone();
         sessions.set_turn_listener(Arc::new(move |chat_id, cwd| {
             turn_diff.note_turn_start(chat_id, cwd);
         }));
         let spaces_sync = SpacesSync::start(repos.clone(), workspace.clone(), &device_id);
+        hz_lap.mark("spaces sync");
         Ok(Self {
             sessions,
             doc_host,
@@ -512,16 +534,23 @@ impl EngineCore {
     /// kill live PTYs, stamp our workspace `lastSeenAt`, and flush every open doc
     /// snapshot.
     pub async fn shutdown(&self) {
+        // hz: MimiEyes — a slow step leaves an `hz_perf` line: the engine
+        // lock stays held until this returns (VENDORED.md #23).
+        let mut hz_lap = crate::hz_lap::Lap::new();
         self.previews.shutdown().await;
+        hz_lap.mark("shutdown: previews");
         self.harness_updates.shutdown().await;
+        hz_lap.mark("shutdown: harness updates");
         // A run interruption transitions its chat to Idle, and Idle normally
         // releases the next queued row. Freeze first so quitting never starts
         // recovered work while the engine is being torn down.
         self.doc_host.pause_all_queues();
         self.sessions.shutdown().await;
+        hz_lap.mark("shutdown: sessions");
         self.terminals.shutdown();
         self.agent_accounts.shutdown();
         self.change_requests.shutdown();
+        hz_lap.mark("shutdown: terminals, accounts, change requests");
         // Cancel + await every worker that can reach Edge before flushing: a
         // replaced synced runtime must not keep polling releases or draining
         // the attachment outbox under the old identity after Local boots.
@@ -542,11 +571,17 @@ impl EngineCore {
         if let Some(updater) = updater {
             updater.shutdown().await;
         }
+        hz_lap.mark("shutdown: updater");
         self.diff_sync.shutdown().await;
+        hz_lap.mark("shutdown: diff sync");
         self.workspace_files.shutdown().await;
+        hz_lap.mark("shutdown: workspace files");
         self.spaces_sync.shutdown().await;
+        hz_lap.mark("shutdown: spaces sync");
         self.doc_host.shutdown_workers().await;
+        hz_lap.mark("shutdown: doc workers");
         self.doc_host.flush_all();
+        hz_lap.mark("shutdown: doc flush");
         self.workspace.shutdown();
         // Break the sessions ⇄ doc-host retain cycle so the replaced graph can
         // actually be freed once the last handle drops.
@@ -794,6 +829,8 @@ impl Engine {
         });
 
         let preview_org = profile.org_id().to_string();
+        // hz: the runtime's slow steps are logged too (hz_lap).
+        let mut hz_lap = crate::hz_lap::Lap::new();
         let core = match lock {
             Some(lock) => EngineCore::assemble_with_profile_locked(
                 profile,
@@ -809,6 +846,7 @@ impl Engine {
                 edge.clone(),
             )?,
         };
+            hz_lap.mark("engine core (total)");
         core.set_auth(auth.clone());
         let preview_workspace = core.workspace.clone();
         let preview_device = core.device_id.clone();
@@ -827,6 +865,7 @@ impl Engine {
             tokens: Arc::new(auth.clone()),
         });
         core.previews.start(projects, preview_signaling).await;
+        hz_lap.mark("previews start");
         // Release checker: polls {edge}/releases hourly (wall clock); headless
         // installs with ZERON_AUTO_UPDATE=1 apply + restart themselves — gated
         // on quiescence so a restart never lands under a live run or open PTY.
@@ -839,6 +878,7 @@ impl Engine {
             Arc::new(move || !sessions.any_active() && !terminals.any_open())
         };
         let updater = zeron_update::Updater::spawn(config.edge_url.clone(), Some(quiescent));
+        hz_lap.mark("updater");
         if let Some(mut token_changes) = edge.as_ref().and_then(EdgeConfig::token_changes) {
             let updater_for_tokens = updater.clone();
             let wake = tokio::spawn(async move {

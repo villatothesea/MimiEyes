@@ -287,7 +287,8 @@ impl Repos {
         }
         cmd.args(args);
         cmd.stdin(std::process::Stdio::null());
-        let output = cmd.output().await.map_err(|e| {
+        // hz: start git without stalling the runtime (VENDORED.md #24).
+        let output = crate::hz_spawn::output(&mut cmd).await.map_err(|e| {
             EngineError::Other(format!("git {args:?} in {cwd:?} failed to start: {e}"))
         })?;
         if !output.status.success() {
@@ -325,8 +326,8 @@ impl Repos {
             cmd.current_dir(cwd);
         }
         cmd.stdin(std::process::Stdio::null());
-        let output = cmd
-            .output()
+        // hz: start git without stalling the runtime (VENDORED.md #24).
+        let output = crate::hz_spawn::output(&mut cmd)
             .await
             .map_err(|e| EngineError::Other(format!("git spawn failed: {e}")))?;
         if output.status.success() {

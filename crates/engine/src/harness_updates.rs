@@ -279,6 +279,14 @@ fn provider(id: HarnessId) -> ProviderSpec {
             update_args: None,
             manual_command: "Update the configured Antigravity ACP server",
         },
+        // hz: MimiEyes — DeepSeek Harness is an npm package; updating stays a
+        // manual global install (VENDORED.md #15).
+        HarnessId::Deepseek => ProviderSpec {
+            version_args: &["--version"],
+            latest: LatestSource::Npm("@deepseek-ai/dsh"),
+            update_args: None,
+            manual_command: "npm install -g @deepseek-ai/dsh@latest",
+        },
         HarnessId::Mock => ProviderSpec {
             version_args: &["--version"],
             latest: LatestSource::Manual,

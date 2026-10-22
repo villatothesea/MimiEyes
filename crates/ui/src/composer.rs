@@ -11607,7 +11607,9 @@ impl Render for Composer {
             session_chrome
         };
         let container = if bottom_slot > 0.0 {
-            let footer = (session_chrome_opacity > 0.0 && !self.side_chat).then(|| {
+            // hz: a pane's composer keeps the checkout/branch footer too
+            // (its own state selects its own session).
+            let footer = (session_chrome_opacity > 0.0 && (!self.side_chat || self.hz_plan_usage)).then(|| {
                 self.pickers
                     .update(cx, |pickers, cx| pickers.render_footer(cx))
             });

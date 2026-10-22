@@ -11,6 +11,16 @@ native-fixture = []
 # Explicit installer injection for integration tests; never enabled in the app.
 installer-fixture = []
 
+[[bin]]
+name = "harness-native-fixture"
+path = "tests/fixtures/native_agent.rs"
+required-features = ["native-fixture"]
+
+[[bin]]
+name = "harness-pi-fixture"
+path = "tests/fixtures/pi_rpc.rs"
+required-features = ["native-fixture"]
+
 [dependencies]
 zeron-voice-media.workspace = true
 zeron-proto.workspace = true

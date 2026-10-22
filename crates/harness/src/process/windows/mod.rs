@@ -108,6 +108,15 @@ impl Child {
 
 impl Command {
     pub fn spawn(&mut self) -> io::Result<Child> {
+        // hz: MimiEyes — a launch is two synchronous CreateProcessW calls (the
+        // escrow, then the agent), and with antivirus scanning each one they
+        // take seconds. On a runtime worker that froze the whole engine: the
+        // worker driving sockets and timers stopped too, so IPC dials, MCP and
+        // queued sends timed out. Hand the worker's duties to another thread
+        // for the duration (VENDORED.md #24).
+        if hz_on_multi_thread_worker() {
+            return tokio::task::block_in_place(|| spawn_prepared(self, |_| Ok(())));
+        }
         spawn_prepared(self, |_| Ok(()))
     }
 
@@ -115,6 +124,13 @@ impl Command {
         self.stdout(Stdio::piped()).stderr(Stdio::piped());
         self.spawn()?.wait_with_output().await
     }
+}
+
+/// hz: inside a multi-thread Tokio runtime, where `block_in_place` is allowed
+/// (it panics on a current-thread runtime, e.g. the version probe's).
+fn hz_on_multi_thread_worker() -> bool {
+    tokio::runtime::Handle::try_current()
+        .is_ok_and(|handle| handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
 }
 
 // A private hook makes the critical interval testable: the process exists but

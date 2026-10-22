@@ -68,9 +68,10 @@ mod windows {
     use super::*;
     use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
     use windows_sys::Win32::System::SystemInformation::GetTickCount64;
+    use windows_sys::Win32::System::JobObjects::IsProcessInJob;
     use windows_sys::Win32::System::Threading::{
-        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
-        WaitForSingleObject,
+        GetCurrentProcess, GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        PROCESS_SYNCHRONIZE, WaitForSingleObject,
     };
     use windows_sys::Win32::System::WindowsProgramming::QueryUnbiasedInterruptTime;
 
@@ -95,6 +96,14 @@ mod windows {
         }
         let started = now_ms();
         let version = env!("CARGO_PKG_VERSION").to_owned();
+        // Still inside a job (breakaway refused): the launcher's job ends
+        // the app and this watcher together.
+        let launcher_job = {
+            let mut in_job = 0;
+            // SAFETY: the current-process pseudo handle; out-parameter.
+            unsafe { IsProcessInJob(GetCurrentProcess(), std::ptr::null_mut(), &mut in_job) };
+            in_job != 0
+        };
         hz_activity::append(
             data_dir,
             &ActivityRecord {
@@ -107,6 +116,7 @@ mod windows {
                 slept_secs: 0,
                 woke_secs_before_exit: None,
                 version: version.clone(),
+                launcher_job,
             },
         );
         let slept_at_start = slept_ms();
@@ -151,6 +161,7 @@ mod windows {
                 slept_secs: slept_so_far / 1_000,
                 woke_secs_before_exit: woke,
                 version,
+                launcher_job,
             },
         );
         Ok(())

@@ -42,6 +42,12 @@ pub mod history;
 mod hz_agent_msg;
 // hz: MimiEyes — the activity monitor's records (VENDORED.md #7).
 pub mod hz_activity;
+// hz: MimiEyes — the window/taskbar icon in the user's accent (VENDORED.md #10).
+mod hz_window_icon;
+// hz: MimiEyes — slow-path timing in the log (VENDORED.md #16).
+pub(crate) mod hz_perf;
+// hz: MimiEyes — breathing marks in their own cached views (VENDORED.md #17).
+pub(crate) mod hz_breath;
 // hz: MimiEyes — the boot splash's animated "Just Eyes" spider (VENDORED.md #1).
 mod hz_splash;
 pub mod icons;

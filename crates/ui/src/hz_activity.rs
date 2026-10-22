@@ -51,6 +51,10 @@ pub struct ActivityRecord {
     /// The app version that ran.
     #[serde(default)]
     pub version: String,
+    /// The watcher could not leave the job of the program that started the
+    /// app: closing that job ends both at once, with no exit to record.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub launcher_job: bool,
 }
 
 pub fn logs_dir(data_dir: &Path) -> PathBuf {
@@ -133,6 +137,7 @@ pub struct Run {
     pub slept_secs: u64,
     pub woke_secs_before_exit: Option<u64>,
     pub version: String,
+    pub launcher_job: bool,
 }
 
 /// Pair start and exit records into runs, newest first. A start with no exit
@@ -165,6 +170,7 @@ pub fn runs(text: &str, current_pid: u32) -> Vec<Run> {
                 slept_secs: record.slept_secs,
                 woke_secs_before_exit: record.woke_secs_before_exit,
                 version: record.version,
+                launcher_job: record.launcher_job,
             }),
             _ => {}
         }
@@ -173,6 +179,13 @@ pub fn runs(text: &str, current_pid: u32) -> Vec<Run> {
         if run.ended.is_none() {
             run.reason = if run.pid == current_pid {
                 "Running now".into()
+            } else if run.launcher_job {
+                // Windows 11 puts nearly every process in some job (even
+                // Explorer's), so this says the launcher *could* have done it.
+                "Ended together with its monitor: most likely the program that started it \
+                 (a terminal or tool) closed everything it launched; or sign-out, shutdown, \
+                 or the process tree was killed"
+                    .into()
             } else {
                 "Ended together with its monitor (sign-out, shutdown, or the process tree was killed)"
                     .into()
@@ -203,8 +216,18 @@ mod tests {
             slept_secs: 0,
             woke_secs_before_exit: None,
             version: "0.2.113".into(),
+            launcher_job: false,
         })
         .unwrap()
+    }
+
+    #[test]
+    fn a_run_in_its_launchers_job_says_so_when_it_vanished() {
+        let mut record: ActivityRecord = serde_json::from_str(&start(40, 2_000)).unwrap();
+        record.launcher_job = true;
+        let text = serde_json::to_string(&record).unwrap();
+        let runs = runs(&text, 1);
+        assert!(runs[0].reason.contains("program that started it"), "{}", runs[0].reason);
     }
 
     #[test]
@@ -232,6 +255,7 @@ mod tests {
             slept_secs: 60,
             woke_secs_before_exit: Some(3),
             version: "0.2.113".into(),
+            launcher_job: false,
         })
         .unwrap();
         let text = format!("{}\n{}\n{}\n{}\n", start(10, 1_000), exit, start(20, 9_000), start(30, 7_000));

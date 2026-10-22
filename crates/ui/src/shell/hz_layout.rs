@@ -80,6 +80,106 @@ pub struct HzViewTab {
     pub zoom: Option<String>,
 }
 
+/// A ready-made arrangement for a new tab of new sessions (the project
+/// row's "+" → New layout).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HzPreset {
+    /// Two, left and right.
+    Columns2,
+    /// Two, top and bottom.
+    Rows2,
+    /// Three: one on the left, two stacked on the right.
+    LeftOneRightTwo,
+    /// Three: two stacked on the left, one on the right.
+    LeftTwoRightOne,
+    /// Four in a 2×2 grid.
+    Grid4,
+}
+
+impl HzPreset {
+    pub const ALL: [HzPreset; 5] = [
+        HzPreset::Columns2,
+        HzPreset::Rows2,
+        HzPreset::LeftOneRightTwo,
+        HzPreset::LeftTwoRightOne,
+        HzPreset::Grid4,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            HzPreset::Columns2 => "Side by side",
+            HzPreset::Rows2 => "Stacked",
+            HzPreset::LeftOneRightTwo => "One left, two right",
+            HzPreset::LeftTwoRightOne => "Two left, one right",
+            HzPreset::Grid4 => "Grid",
+        }
+    }
+
+    pub fn panes(self) -> usize {
+        match self {
+            HzPreset::Columns2 | HzPreset::Rows2 => 2,
+            HzPreset::LeftOneRightTwo | HzPreset::LeftTwoRightOne => 3,
+            HzPreset::Grid4 => 4,
+        }
+    }
+
+    /// The preset's tree of empty (new-session) slots; `id` mints node ids
+    /// from a prefix ("l" leaf, "s" split).
+    pub fn tree(self, id: &mut dyn FnMut(&str) -> String) -> HzNode {
+        fn split(id: &mut dyn FnMut(&str) -> String, dir: HzDir, a: HzNode, b: HzNode) -> HzNode {
+            HzNode::Split {
+                id: id("s"),
+                dir,
+                ratio: 0.5,
+                a: Box::new(a),
+                b: Box::new(b),
+            }
+        }
+        let leaf = |id: &mut dyn FnMut(&str) -> String| HzNode::leaf(id("l"));
+        match self {
+            HzPreset::Columns2 => {
+                let (a, b) = (leaf(id), leaf(id));
+                split(id, HzDir::Right, a, b)
+            }
+            HzPreset::Rows2 => {
+                let (a, b) = (leaf(id), leaf(id));
+                split(id, HzDir::Down, a, b)
+            }
+            HzPreset::LeftOneRightTwo => {
+                let (left, top, bottom) = (leaf(id), leaf(id), leaf(id));
+                let right = split(id, HzDir::Down, top, bottom);
+                split(id, HzDir::Right, left, right)
+            }
+            HzPreset::LeftTwoRightOne => {
+                let (top, bottom, right) = (leaf(id), leaf(id), leaf(id));
+                let left = split(id, HzDir::Down, top, bottom);
+                split(id, HzDir::Right, left, right)
+            }
+            HzPreset::Grid4 => {
+                let (a, b, c, d) = (leaf(id), leaf(id), leaf(id), leaf(id));
+                let left = split(id, HzDir::Down, a, b);
+                let right = split(id, HzDir::Down, c, d);
+                split(id, HzDir::Right, left, right)
+            }
+        }
+    }
+}
+
+/// A closed pane (Settings → Closed panes): which session, where it was —
+/// its project and tab — and when, so a restore puts it back there.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct HzClosed {
+    pub chat: String,
+    /// Layout key (space id, `""` = no project).
+    pub project: String,
+    /// The tab's id and name when it closed.
+    pub tab: String,
+    pub tab_name: String,
+    /// Epoch milliseconds.
+    pub at: i64,
+}
+
 /// All of a space's view tabs (the `hz_layouts` value).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -664,6 +764,33 @@ pub fn tab_slot(x: f32, chips: &[(f32, f32)]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn presets_build_their_arrangement_of_empty_slots() {
+        let mut n = 0;
+        let mut id = |prefix: &str| {
+            n += 1;
+            format!("{prefix}{n}")
+        };
+        for preset in HzPreset::ALL {
+            let tree = preset.tree(&mut id);
+            assert_eq!(tree.leaf_count(), preset.panes(), "{preset:?}");
+            assert!(tree.chats().is_empty());
+        }
+        // One left, two right: a column split whose right side is stacked.
+        match HzPreset::LeftOneRightTwo.tree(&mut id) {
+            HzNode::Split { dir: HzDir::Right, a, b, .. } => {
+                assert!(matches!(*a, HzNode::Leaf { .. }));
+                assert!(matches!(*b, HzNode::Split { dir: HzDir::Down, .. }));
+            }
+            other => panic!("{other:?}"),
+        }
+        // Ids never repeat.
+        let tree = HzPreset::Grid4.tree(&mut id);
+        let leaves = tree.leaf_ids();
+        let unique: std::collections::HashSet<_> = leaves.iter().collect();
+        assert_eq!(unique.len(), leaves.len());
+    }
 
     fn leaf(id: &str) -> HzNode {
         HzNode::Leaf {

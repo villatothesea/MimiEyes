@@ -357,6 +357,89 @@ fn hermes_install_paths() -> Vec<PathBuf> {
     dirs
 }
 
+/// hz: MimiEyes — DeepSeek Harness's `thought_level` is off / low / high /
+/// max: Zeron's lowest level is its "off", medium rounds up to high.
+fn deepseek_effort_values(
+    reasoning: Option<ReasoningLevel>,
+    model: Option<&str>,
+) -> Vec<&'static str> {
+    match reasoning {
+        Some(ReasoningLevel::Minimal) => vec!["off", "low"],
+        Some(ReasoningLevel::Medium) => vec!["high"],
+        _ => default_effort_values(reasoning, model),
+    }
+}
+
+/// hz: dsh's built-in DeepSeek models; the ids are its own option values
+/// ([provider, model] as JSON). The live session's list replaces these once
+/// discovered.
+fn deepseek_models() -> Vec<Model> {
+    let model = |id: &str, label: &str, description: Option<&str>| Model {
+        id: id.into(),
+        label: label.into(),
+        description: description.map(str::to_owned),
+        reasoning_levels: vec![
+            ReasoningLevel::Minimal,
+            ReasoningLevel::Low,
+            ReasoningLevel::High,
+            ReasoningLevel::Max,
+        ],
+        options: Vec::new(),
+    };
+    vec![
+        model(r#"["deepseek-official","deepseek-v4-flash"]"#, "DeepSeek V4 Flash", None),
+        model(r#"["deepseek-official","deepseek-flash"]"#, "DeepSeek V4.1 Flash", None),
+        model(
+            r#"["deepseek-official","deepseek-v4-pro"]"#,
+            "DeepSeek V4 Pro",
+            Some("Stronger agentic coding and difficult reasoning, at higher cost"),
+        ),
+    ]
+}
+
+/// hz: MimiEyes — DeepSeek Harness (`dsh`, npm `@deepseek-ai/dsh`) serves
+/// ACP itself under its `acp` profile (VENDORED.md #15). Verified against
+/// 0.2.1-rc.2: models and reasoning effort are `configOptions` (model /
+/// thought_level), sessions list / resume / close, stdio and HTTP MCP
+/// servers accepted, no auth methods (the key lives in dsh's own config).
+fn deepseek_spec() -> AcpAgentSpec {
+    AcpAgentSpec {
+        id: HarnessId::Deepseek,
+        display_name: "DeepSeek",
+        executable: "dsh",
+        env_override: "DSH_EXECUTABLE",
+        args: &["--profile", "acp"],
+        // A global npm install is the documented route; no managed adapter.
+        npm_package: None,
+        archive: None,
+        extra_paths: Vec::new,
+        cli_executable: "dsh",
+        cli_extra_paths: Vec::new,
+        install_hint: "dsh (searched PATH, the login shell's PATH and fnm/nvm/volta/pnpm/bun \
+             install dirs; install with `npm install -g @deepseek-ai/dsh`, set a DeepSeek API \
+             key in dsh's settings or DEEPSEEK_API_KEY; set DSH_EXECUTABLE to override)",
+        models: deepseek_models,
+        steering_mode: SteeringMode::TurnBoundary,
+        reasoning_levels: &[
+            ReasoningLevel::Minimal,
+            ReasoningLevel::Low,
+            ReasoningLevel::High,
+            ReasoningLevel::Max,
+        ],
+        prompt_transform: identity_transform,
+        effort_values: deepseek_effort_values,
+        ladder_extras: &[],
+        prompt_complete_extension: false,
+        prompt_stall: None,
+        stall_hint: "The dsh process is likely wedged; check its key and network.",
+        effort_in_model_id: false,
+        auth_method: None,
+        skill_dirs: Vec::new,
+        hidden_commands: &[],
+        drops_unstarted_cancelled_prompt: false,
+    }
+}
+
 fn hermes_spec() -> AcpAgentSpec {
     AcpAgentSpec {
         id: HarnessId::Hermes,
@@ -1286,6 +1369,11 @@ impl AcpHarness {
         Self::with_spec(hermes_spec())
     }
 
+    /// hz: MimiEyes — DeepSeek Harness (`dsh --profile acp`).
+    pub fn deepseek() -> Self {
+        Self::with_spec(deepseek_spec())
+    }
+
     /// google antigravity over its acp server (`agy_acp_server`).
     pub fn antigravity() -> Self {
         Self::with_spec(antigravity_spec())
@@ -1916,6 +2004,25 @@ fn reasoning_from_value(value: &str) -> Option<ReasoningLevel> {
 /// option outside mode/model/thought_level becomes a `ModelOption` — so
 /// unmatched models keep fast mode etc.; the catalog only enriches matched
 /// ids with label/description/per-model ladders.
+/// hz: MimiEyes — a select config option's choices, with ACP option groups
+/// (`{group, name, options: [...]}`) flattened: DeepSeek Harness groups its
+/// models by provider (VENDORED.md #15). Ungrouped selects read as before.
+fn select_choices(option: &Value) -> Vec<&Value> {
+    let mut out = Vec::new();
+    for choice in option
+        .get("options")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+    {
+        match choice.get("options").and_then(Value::as_array) {
+            Some(group) if choice.get("value").is_none() => out.extend(group.iter()),
+            _ => out.push(choice),
+        }
+    }
+    out
+}
+
 fn models_from_session(session_response: &Value, catalog: &[Model]) -> Vec<Model> {
     let config_options = session_response
         .get("configOptions")
@@ -1926,7 +2033,7 @@ fn models_from_session(session_response: &Value, catalog: &[Model]) -> Vec<Model
     let ladder: Vec<ReasoningLevel> = config_options
         .iter()
         .find(|o| o.get("category").and_then(Value::as_str) == Some("thought_level"))
-        .and_then(|o| o.get("options").and_then(Value::as_array))
+        .map(select_choices) // hz: option groups flattened
         .map(|opts| {
             opts.iter()
                 .filter_map(|o| o.get("value").and_then(Value::as_str))
@@ -1984,8 +2091,7 @@ fn models_from_session(session_response: &Value, catalog: &[Model]) -> Vec<Model
     let model_select: Vec<&Value> = config_options
         .iter()
         .find(|o| o.get("category").and_then(Value::as_str) == Some("model"))
-        .and_then(|o| o.get("options").and_then(Value::as_array))
-        .map(|opts| opts.iter().collect())
+        .map(select_choices) // hz: option groups flattened
         .unwrap_or_default();
     if !model_select.is_empty() {
         let raw_ids: Vec<&str> = model_select
@@ -2082,10 +2188,9 @@ fn trait_from_config_option(option: &Value) -> Option<ModelOption> {
     let label = option.get("name").and_then(Value::as_str).unwrap_or(id);
     match option.get("type").and_then(Value::as_str)? {
         "select" => {
-            let choices: Vec<ModelOptionChoice> = option
-                .get("options")
-                .and_then(Value::as_array)?
-                .iter()
+            // hz: option groups flattened.
+            let choices: Vec<ModelOptionChoice> = select_choices(option)
+                .into_iter()
                 .filter_map(|c| {
                     let id = c.get("value").and_then(Value::as_str)?;
                     Some(ModelOptionChoice {
@@ -2723,12 +2828,8 @@ fn validate_config_model_selection(
     else {
         return Ok(());
     };
-    let available: Vec<&str> = option
-        .get("options")
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or_default()
-        .iter()
+    let available: Vec<&str> = select_choices(option) // hz: groups flattened
+        .into_iter()
         .filter_map(|choice| choice.get("value").and_then(Value::as_str))
         .collect();
     let context_1m = model_options
@@ -2792,12 +2893,8 @@ fn config_option_sets(
         let kind = option.get("type").and_then(Value::as_str).unwrap_or("");
         let category = option.get("category").and_then(Value::as_str);
         let current = option.get("currentValue");
-        let available: Vec<&str> = option
-            .get("options")
-            .and_then(Value::as_array)
-            .map(|a| a.as_slice())
-            .unwrap_or_default()
-            .iter()
+        let available: Vec<&str> = select_choices(option) // hz: groups flattened
+            .into_iter()
             .filter_map(|o| o.get("value").and_then(Value::as_str))
             .collect();
 
@@ -3349,10 +3446,10 @@ fn effort_variant_id(
                 .iter()
                 .find(|o| o.get("category").and_then(Value::as_str) == Some("model"))
         })
-        .and_then(|o| o.get("options").and_then(Value::as_array))
+        .map(select_choices) // hz: option groups flattened
         .map(|choices| {
             choices
-                .iter()
+                .into_iter()
                 .filter_map(|c| {
                     let id = c.get("value").and_then(Value::as_str)?;
                     Some((id, c.get("name").and_then(Value::as_str).unwrap_or(id)))
@@ -3749,10 +3846,20 @@ async fn run_session(session: Session) {
             "cwd": request.cwd,
             "mcpServers": acp_mcp_servers(request.mcp.as_ref()),
         });
+        // hz: an agent that can resume but not load (DeepSeek Harness)
+        // reopens its session with `session/resume` (VENDORED.md #15).
+        let caps = &init["agentCapabilities"];
+        let reopen = if caps["loadSession"].as_bool() != Some(true)
+            && caps["sessionCapabilities"].get("resume").is_some()
+        {
+            "session/resume"
+        } else {
+            "session/load"
+        };
         let (session_id, session_response) = if let Some(resume) = &request.resume {
             let mut load = session_params.clone();
             load["sessionId"] = Value::String(resume.clone());
-            match request_draining(&client, &mut incoming, "session/load", load).await {
+            match request_draining(&client, &mut incoming, reopen, load).await {
                 Ok(resp) => (resume.clone(), resp),
                 Err(e) if auth_method.is_some() && is_auth_required(&e) => {
                     return Err(HarnessError::Protocol(not_signed_in(agent_name)));
@@ -5054,6 +5161,66 @@ async fn run_session(session: Session) {
 mod tests {
     use super::*;
 
+    // hz: grouped select options (dsh's model list) read like flat ones.
+    #[test]
+    fn hz_grouped_model_options_are_flattened() {
+        let response = json!({
+            "configOptions": [{
+                "id": "model", "category": "model", "type": "select",
+                "currentValue": "[\"p\",\"a\"]",
+                "options": [{
+                    "group": "p", "name": "Provider",
+                    "options": [
+                        { "value": "[\"p\",\"a\"]", "name": "Model A" },
+                        { "value": "[\"p\",\"b\"]", "name": "Model B", "description": "Bigger" },
+                    ],
+                }],
+            }, {
+                "id": "reasoning_effort", "category": "thought_level", "type": "select",
+                "currentValue": "high",
+                "options": [{ "value": "low", "name": "Low" }, { "value": "high", "name": "High" }],
+            }],
+        });
+        let models = models_from_session(&response, &[]);
+        assert_eq!(
+            models.iter().map(|m| (m.id.as_str(), m.label.as_str())).collect::<Vec<_>>(),
+            vec![("[\"p\",\"a\"]", "Model A"), ("[\"p\",\"b\"]", "Model B")]
+        );
+        assert_eq!(models[1].description.as_deref(), Some("Bigger"));
+        assert_eq!(models[0].reasoning_levels, vec![ReasoningLevel::Low, ReasoningLevel::High]);
+    }
+
+    // hz: MimiEyes — DeepSeek Harness (VENDORED.md #15).
+    #[test]
+    fn hz_deepseek_spec_maps_effort_onto_dsh_values() {
+        let spec = deepseek_spec();
+        assert_eq!(spec.id, HarnessId::Deepseek);
+        assert_eq!(spec.args, &["--profile", "acp"]);
+        assert_eq!(
+            deepseek_effort_values(Some(ReasoningLevel::Minimal), None).first(),
+            Some(&"off")
+        );
+        assert_eq!(deepseek_effort_values(Some(ReasoningLevel::Medium), None), vec!["high"]);
+        assert_eq!(deepseek_effort_values(Some(ReasoningLevel::Max), None).first(), Some(&"max"));
+        assert!(
+            deepseek_models()
+                .iter()
+                .all(|m| m.id.starts_with("[\"deepseek-official\","))
+        );
+    }
+
+    /// Live: the installed `dsh` serves ACP and lists its models (no prompt
+    /// is sent). `cargo test -p zeron-harness --lib hz_deepseek_live -- --ignored`.
+    #[tokio::test]
+    #[ignore]
+    async fn hz_deepseek_live_lists_models() {
+        let harness = AcpHarness::deepseek();
+        assert!(harness.installed(), "dsh not found");
+        let models = harness.models().await.unwrap();
+        eprintln!("{:#?}", models.iter().map(|m| (&m.id, &m.label, &m.reasoning_levels)).collect::<Vec<_>>());
+        assert!(models.iter().any(|m| m.label.contains("Pro") || m.id.contains("pro")));
+    }
+
     #[test]
     fn unix_browser_suppression_falls_back_to_zerons_noop_mode() {
         let present = std::env::current_exe().unwrap();
@@ -5942,7 +6109,8 @@ mod tests {
         let models = models_from_session(&response, &crate::claude::catalog::static_models());
         assert_eq!(
             models.iter().map(|m| m.label.as_str()).collect::<Vec<_>>(),
-            vec!["Opus 5.5", "Fable 5.1", "Sonnet 5", "Haiku 4.5"]
+            // hz: the `sonnet` alias is the current Sonnet, 5.5, now curated.
+            vec!["Opus 5.5", "Fable 5.1", "Sonnet 5.5", "Haiku 4.5"]
         );
         // The alias rows carry the catalog's per-model ladders.
         assert!(

@@ -1690,6 +1690,34 @@ impl Pickers {
         }));
     }
 
+    /// hz: MimiEyes — start from `other`'s loaded catalogs (the window's
+    /// picker) when both target the same device: a new pane's composer then
+    /// shows its harnesses and models at once, and its prefetch has nothing
+    /// left to ask the engine for (every pane used to re-run model discovery
+    /// for every harness; VENDORED.md #16). Opening the picker still refreshes.
+    pub(crate) fn hz_seed_from(&mut self, other: &Entity<Pickers>, cx: &mut Context<Self>) {
+        let (harnesses, models, other_target) = {
+            let other = other.read(cx);
+            (other.harnesses.clone(), other.models.clone(), other.space_target(cx))
+        };
+        if other_target != self.space_target(cx) || harnesses.ready().is_none() {
+            return;
+        }
+        if self.harnesses.ready().is_none() {
+            self.harnesses = harnesses;
+            self.harnesses_stale = false;
+        }
+        for (harness, loaded) in models {
+            if matches!(loaded, Loadable::Ready(_))
+                && !matches!(self.models.get(&harness), Some(Loadable::Ready(_)))
+            {
+                self.models.insert(harness, loaded);
+            }
+        }
+        self.catalog_rev += 1;
+        cx.notify();
+    }
+
     /// Kick a model load for the effective harness AND every offered one, in
     /// parallel — by the time the user opens the picker (or switches rail
     /// tabs) the lists are already there, instead of a per-selection
@@ -6045,6 +6073,8 @@ pub(crate) fn harness_brand_icon(harness: HarnessId) -> (&'static str, Option<gp
         // The pixel-"o" from opencode's wordmark (their favicon), monochrome.
         HarnessId::Opencode => (crate::icons::OPENCODE_MARK, None),
         HarnessId::Antigravity => (crate::icons::ANTIGRAVITY_MARK, None),
+        // hz: DeepSeek's whale, monochrome (black on light surfaces).
+        HarnessId::Deepseek => (crate::icons::DEEPSEEK_MARK, None),
     }
 }
 
@@ -7414,6 +7444,38 @@ mod tests {
             current,
             worktree_path: worktree.map(str::to_string),
         }
+    }
+
+    // hz: a pane's picker starts from the window's catalogs (same device),
+    // so it has nothing to rediscover; a picker aimed elsewhere is left alone.
+    #[gpui::test]
+    fn hz_pane_pickers_start_from_the_window_catalogs(cx: &mut gpui::TestAppContext) {
+        let mut state = |device: &str| {
+            let device = device.to_owned();
+            cx.new(move |_| {
+                let mut state = AppState::new();
+                state.local_device_id = Some("local".into());
+                state.selected_device = Some(device);
+                state
+            })
+        };
+        let (window_state, pane_state, remote_state) = (state("local"), state("local"), state("remote"));
+        let window = cx.new(|cx| Pickers::new(window_state, cx));
+        window.update(cx, |p, cx| {
+            p.harnesses = Loadable::Ready(vec![descriptor(HarnessId::Codex, "Codex")]);
+            p.apply_model_catalog(HarnessId::Codex, Loadable::Ready(vec![bare_model("gpt", "GPT")]), cx);
+        });
+        let pane = cx.new(|cx| Pickers::new(pane_state, cx));
+        let remote = cx.new(|cx| Pickers::new(remote_state, cx));
+        pane.update(cx, |p, cx| p.hz_seed_from(&window, cx));
+        remote.update(cx, |p, cx| p.hz_seed_from(&window, cx));
+        pane.update(cx, |p, _| {
+            assert!(matches!(p.harnesses, Loadable::Ready(_)));
+            assert!(matches!(p.models.get(&HarnessId::Codex), Some(Loadable::Ready(_))));
+        });
+        remote.update(cx, |p, _| {
+            assert!(!matches!(p.models.get(&HarnessId::Codex), Some(Loadable::Ready(_))));
+        });
     }
 
     #[gpui::test]
@@ -9452,7 +9514,8 @@ mod tests {
         );
         assert_eq!(
             models.iter().map(|m| m.label.as_str()).collect::<Vec<_>>(),
-            vec!["Opus 5.5", "Fable 5", "Sonnet 5", "Haiku 4.5", "Nova 1"]
+            // hz: the `sonnet` alias is the current Sonnet, 5.5, now curated.
+            vec!["Opus 5.5", "Fable 5", "Sonnet 5.5", "Haiku 4.5", "Nova 1"]
         );
         assert_eq!(
             models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),

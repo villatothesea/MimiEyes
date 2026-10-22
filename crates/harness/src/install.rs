@@ -55,6 +55,8 @@ fn methods(id: HarnessId, platform: Platform) -> Vec<Method> {
         Mock => vec![],
         Antigravity => vec![Archive],
         Pirust => vec![], // hz: built from the PiRustDurable workspace, no installer
+        // hz: MimiEyes — DeepSeek Harness ships on npm (VENDORED.md #15).
+        Deepseek => vec![Npm("@deepseek-ai/dsh", false)],
         ClaudeCode if windows => vec![PowerShell("irm https://claude.ai/install.ps1 | iex")],
         ClaudeCode => vec![Shell(
             "curl -fsSL https://claude.ai/install.sh | bash",
@@ -160,6 +162,7 @@ pub fn manual_command(id: HarnessId) -> Option<&'static str> {
         Grok => "npm install -g @xai-official/grok",
         Hermes => "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash",
         Devin => "curl -fsSL https://cli.devin.ai/install.sh | bash",
+        Deepseek => "npm install -g @deepseek-ai/dsh", // hz:
         Antigravity | Mock => return None,
     })
 }
@@ -177,6 +180,7 @@ fn cli_and_dir(id: HarnessId) -> (&'static str, &'static str) {
         Hermes => ("hermes", "~/.local/bin or ~/.hermes/bin"),
         Devin => ("devin", "~/.local/bin"),
         Antigravity => ("agy_acp_server", "~/.zeron/adapters"),
+        Deepseek => ("dsh", "the npm global bin"), // hz:
         Mock => ("mock", "PATH"),
     }
 }
@@ -194,6 +198,7 @@ pub fn installed(id: HarnessId) -> bool {
         Hermes => crate::AcpHarness::hermes().installed(),
         Devin => crate::AcpHarness::devin().installed(),
         Antigravity => crate::AcpHarness::antigravity().installed(),
+        Deepseek => crate::AcpHarness::deepseek().installed(), // hz:
         Mock => false,
     }
 }

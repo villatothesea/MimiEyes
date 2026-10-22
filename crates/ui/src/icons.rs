@@ -133,6 +133,8 @@ icon_assets![
     // hz: MimiEyes — pane-menu zoom and even-out glyphs (HerdrGui's set).
     (ZOOM_ARROWS, "zoom-arrows"),
     (EVEN_PANES, "even-panes"),
+    // hz: MimiEyes — Settings → Usage (a bar chart).
+    (CHART, "chart"),
     // Long-line wrapping toggle shared by changes and agent Markdown fences.
     (WRAP_TEXT, "wrap-text"),
     (SMARTPHONE, "smartphone"),
@@ -230,6 +232,8 @@ icon_assets![
     (HERMES_MARK, "hermes-mark"),
     (PI_MARK, "pi-mark"),
     (PIRUST_MARK, "pirust-mark"),
+    // hz: MimiEyes — DeepSeek's whale (VENDORED.md #15), monochrome.
+    (DEEPSEEK_MARK, "deepseek-mark"),
     (OPENCODE_MARK, "opencode-mark"),
     (ANTIGRAVITY_MARK, "antigravity-mark"),
 ];

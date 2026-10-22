@@ -166,6 +166,7 @@ pub fn harness_label(id: &str) -> String {
         "cursor" => "Cursor",
         "opencode" => "OpenCode",
         "antigravity" => "Antigravity",
+        "deepseek" => "DeepSeek", // hz:
         "mock" => "Mock",
         other => return other.to_owned(),
     }
@@ -256,6 +257,23 @@ pub fn fallback_models(harness: &str) -> Vec<ModelInfo> {
                 "Hy3 Free",
                 "Free tier on OpenCode Zen",
                 &["low", "medium", "high"],
+                vec![],
+            ),
+        ],
+        // hz: MimiEyes — DeepSeek Harness's built-in models (its option values).
+        "deepseek" => vec![
+            model(
+                r#"["deepseek-official","deepseek-v4-flash"]"#,
+                "DeepSeek V4 Flash",
+                "DeepSeek's fast model through DeepSeek Harness",
+                &["minimal", "low", "high", "max"],
+                vec![],
+            ),
+            model(
+                r#"["deepseek-official","deepseek-v4-pro"]"#,
+                "DeepSeek V4 Pro",
+                "Stronger agentic coding and difficult reasoning, at higher cost",
+                &["minimal", "low", "high", "max"],
                 vec![],
             ),
         ],

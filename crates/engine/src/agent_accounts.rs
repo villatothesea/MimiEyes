@@ -3104,6 +3104,7 @@ fn harness_slug(harness: HarnessId) -> &'static str {
         HarnessId::Pirust => "pirust",
         HarnessId::Opencode => "opencode",
         HarnessId::Antigravity => "antigravity",
+        HarnessId::Deepseek => "deepseek", // hz:
         HarnessId::Mock => "mock",
     }
 }

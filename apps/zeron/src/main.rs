@@ -6,6 +6,8 @@
 
 // hz: MimiEyes — the activity monitor (VENDORED.md #7).
 mod hz_monitor;
+// hz: MimiEyes — one window at a time (VENDORED.md #23).
+mod hz_single;
 mod auth_cli;
 mod daemon;
 mod paths;
@@ -161,6 +163,17 @@ fn main() -> anyhow::Result<()> {
     #[cfg(windows)]
     attach_parent_console();
     let cli = Cli::parse();
+    // hz: MimiEyes is already open: bring it forward instead of a second
+    // window on the same engine — before anything else, so this launch
+    // leaves the running one's log and update leftovers alone. A launch that
+    // opens a link keeps stock behaviour (a viewport that opens it).
+    if cli.command.is_none()
+        && cli.open_url.is_none()
+        && cli.wait_for_exit.is_none()
+        && hz_single::activate_existing()
+    {
+        return Ok(());
+    }
     #[cfg(windows)]
     if let Some(pid) = cli.wait_for_exit {
         zeron_update::windows::wait_for_exit(pid)?;

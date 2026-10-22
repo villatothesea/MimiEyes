@@ -1085,8 +1085,8 @@ async fn capture_git_in<S: AsRef<OsStr>>(
     cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
-    let mut child = cmd
-        .spawn()
+    // hz: start git without stalling the runtime (VENDORED.md #24).
+    let mut child = crate::hz_spawn::spawn(&mut cmd)
         .map_err(|e| EngineError::Other(format!("git spawn failed: {e}")))?;
     let mut stdout = child
         .stdout

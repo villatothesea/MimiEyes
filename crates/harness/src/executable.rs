@@ -163,23 +163,37 @@ pub(crate) fn invalidate_versions(names: &[&str]) {
 /// Probe once per executable identity. Failures are cached too, including timeout.
 /// Keep the lock during the short probe so concurrent descriptor requests coalesce.
 pub fn binary_version(path: &Path) -> Option<semver::Version> {
-    use std::time::Duration;
     let canonical = path.canonicalize().ok()?;
     let metadata = canonical.metadata().ok()?;
     let key = (canonical, metadata.modified().ok(), metadata.len());
-    let mut cache = VERSION_CACHE
-        .get_or_init(Default::default)
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
     let alias = path
         .file_stem()
         .unwrap_or_default()
         .to_string_lossy()
         .into_owned();
-    if let Some((version, aliases)) = cache.get_mut(&key) {
-        aliases.insert(alias);
-        return version.clone();
+    if let Some(version) = hz_versions::cached(&key, &alias) {
+        return version;
     }
+    // hz: MimiEyes — a version this binary reported before (same path, mtime
+    // and size) is reused across launches, so a probe that times out on a
+    // busy machine no longer flips it to "unknown" — which changed every
+    // model-catalog key and forced a live rediscovery (VENDORED.md #20).
+    if let Some(version) = hz_versions::recall(&key) {
+        hz_versions::put(key, Some(version.clone()), alias);
+        return Some(version);
+    }
+    // hz: the probe runs on its own thread (one per binary at a time) and a
+    // caller waits at most a moment for it: the engine's async workers call
+    // this on nearly every harness lookup, and waiting out a 10 s `--version`
+    // there stalled the whole engine (the IPC socket stopped accepting, so
+    // agents' MCP calls failed with "no response"). A caller that gives up
+    // sees "unknown" this time; the version lands in the cache for the next.
+    hz_versions::probe_in_background(key.clone(), path.to_path_buf(), alias.clone());
+    hz_versions::wait_for(&key, &alias)
+}
+
+/// Run `path --version` and parse it (the probe `binary_version` caches).
+fn hz_probe(path: &Path) -> Option<semver::Version> {
     #[cfg(not(windows))]
     let probe = || -> Option<semver::Version> {
         use std::io::Read;
@@ -208,7 +222,7 @@ pub fn binary_version(path: &Path) -> Option<semver::Version> {
         let success = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break status.success(),
-                Ok(None) if start.elapsed() < Duration::from_secs(2) => {
+                Ok(None) if start.elapsed() < HZ_PROBE_TIMEOUT => {
                     std::thread::sleep(Duration::from_millis(10))
                 }
                 _ => {
@@ -227,7 +241,7 @@ pub fn binary_version(path: &Path) -> Option<semver::Version> {
         }
         let mut bytes = Vec::new();
         for reader in readers {
-            while !reader.is_finished() && start.elapsed() < Duration::from_secs(2) {
+            while !reader.is_finished() && start.elapsed() < HZ_PROBE_TIMEOUT {
                 std::thread::sleep(Duration::from_millis(5));
             }
             if !reader.is_finished() {
@@ -256,7 +270,7 @@ pub fn binary_version(path: &Path) -> Option<semver::Version> {
                         .stdout(crate::process::Stdio::piped())
                         .stderr(crate::process::Stdio::piped())
                         .kill_on_drop(true);
-                    let output = tokio::time::timeout(Duration::from_secs(2), command.output())
+                    let output = tokio::time::timeout(HZ_PROBE_TIMEOUT, command.output())
                         .await
                         .ok()?
                         .ok()?;
@@ -270,10 +284,166 @@ pub fn binary_version(path: &Path) -> Option<semver::Version> {
         .ok()
         .flatten()
     };
-    let version = probe();
-    cache.retain(|(p, _, _), _| p != &key.0);
-    cache.insert(key, (version.clone(), [alias].into_iter().collect()));
-    version
+    probe()
+}
+
+/// hz: MimiEyes — `--version` gets this long (stock: 2 s, which an npm shim
+/// on a loaded Windows machine regularly misses).
+const HZ_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// hz: MimiEyes — versions binaries reported, kept across launches in
+/// `%LOCALAPPDATA%\MimiEyes\hz-versions.json` (`~/.cache/mimieyes` elsewhere),
+/// and the per-binary probe gates.
+mod hz_versions {
+    use super::VersionKey;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::{Mutex, OnceLock};
+
+    fn file() -> Option<PathBuf> {
+        // Unit tests probe throwaway shims: keep them out of the user's file.
+        if cfg!(test) {
+            return None;
+        }
+        let base = std::env::var_os("LOCALAPPDATA")
+            .map(|dir| PathBuf::from(dir).join("MimiEyes"))
+            .or_else(|| super::home_dir().map(|home| home.join(".cache").join("mimieyes")))?;
+        Some(base.join("hz-versions.json"))
+    }
+
+    fn id(key: &VersionKey) -> String {
+        let modified = key
+            .1
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |d| d.as_millis());
+        format!("{}|{modified}|{}", key.0.display(), key.2)
+    }
+
+    fn store() -> &'static Mutex<HashMap<String, String>> {
+        static STORE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+        STORE.get_or_init(|| {
+            let saved = file()
+                .and_then(|path| std::fs::read(path).ok())
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                .unwrap_or_default();
+            Mutex::new(saved)
+        })
+    }
+
+    pub(super) fn recall(key: &VersionKey) -> Option<semver::Version> {
+        let store = store().lock().unwrap_or_else(|e| e.into_inner());
+        semver::Version::parse(store.get(&id(key))?).ok()
+    }
+
+    pub(super) fn remember(key: &VersionKey, version: &semver::Version) {
+        let mut store = store().lock().unwrap_or_else(|e| e.into_inner());
+        // One entry per binary path: a replaced binary drops its old line.
+        let path = format!("{}|", key.0.display());
+        store.retain(|k, _| !k.starts_with(&path));
+        store.insert(id(key), version.to_string());
+        if let (Some(path), Ok(bytes)) = (file(), serde_json::to_vec_pretty(&*store)) {
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(path, bytes);
+        }
+    }
+
+    fn failures() -> &'static Mutex<HashMap<PathBuf, std::time::Instant>> {
+        static FAILURES: OnceLock<Mutex<HashMap<PathBuf, std::time::Instant>>> = OnceLock::new();
+        FAILURES.get_or_init(Default::default)
+    }
+
+    /// A probe of this binary failed (it timed out on a busy machine, say).
+    pub(super) fn failed(key: &VersionKey) {
+        failures()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key.0.clone(), std::time::Instant::now());
+    }
+
+    /// A failed probe is tried again once two minutes have passed.
+    pub(super) fn retry_due(key: &VersionKey) -> bool {
+        failures()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&key.0)
+            .is_some_and(|at| at.elapsed() >= std::time::Duration::from_secs(120))
+    }
+
+    fn cache() -> std::sync::MutexGuard<'static, HashMap<VersionKey, super::VersionEntry>> {
+        super::VERSION_CACHE
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The cached version (`Some(None)`: known unknown), unless a failed
+    /// probe is due for another try.
+    pub(super) fn cached(key: &VersionKey, alias: &str) -> Option<Option<semver::Version>> {
+        let mut cache = cache();
+        let (version, aliases) = cache.get_mut(key)?;
+        if version.is_none() && retry_due(key) {
+            return None;
+        }
+        aliases.insert(alias.to_owned());
+        Some(version.clone())
+    }
+
+    pub(super) fn put(key: VersionKey, version: Option<semver::Version>, alias: String) {
+        let mut cache = cache();
+        cache.retain(|(p, _, _), _| p != &key.0);
+        cache.insert(key, (version, [alias].into_iter().collect()));
+    }
+
+    fn inflight() -> &'static Mutex<std::collections::HashSet<PathBuf>> {
+        static INFLIGHT: OnceLock<Mutex<std::collections::HashSet<PathBuf>>> = OnceLock::new();
+        INFLIGHT.get_or_init(Default::default)
+    }
+
+    /// Probe `path` on a thread of its own unless one is already running.
+    pub(super) fn probe_in_background(key: VersionKey, path: PathBuf, alias: String) {
+        if !inflight()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key.0.clone())
+        {
+            return;
+        }
+        std::thread::spawn(move || {
+            let version = super::hz_probe(&path);
+            match &version {
+                Some(found) => remember(&key, found),
+                None => failed(&key),
+            }
+            let canonical = key.0.clone();
+            put(key, version, alias);
+            inflight()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&canonical);
+        });
+    }
+
+    /// Wait briefly for a running probe (the whole probe in tests, which
+    /// assert exact versions); `None` if it has not finished.
+    pub(super) fn wait_for(key: &VersionKey, alias: &str) -> Option<semver::Version> {
+        let budget = if cfg!(test) {
+            super::HZ_PROBE_TIMEOUT + std::time::Duration::from_secs(1)
+        } else {
+            std::time::Duration::from_millis(500)
+        };
+        let deadline = std::time::Instant::now() + budget;
+        loop {
+            if let Some(version) = cached(key, alias) {
+                return version;
+            }
+            if std::time::Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
 }
 
 pub(crate) fn parse_version(bytes: &[u8]) -> Option<semver::Version> {
@@ -549,6 +719,21 @@ mod tests {
         );
         assert!(parse_version(b"unknown").is_none());
     }
+    /// hz: live — Zeron's own probe on this machine's npm shims (manual:
+    /// `cargo test -p zeron-harness --lib hz_live_npm_shim -- --ignored --nocapture`).
+    #[cfg(windows)]
+    #[test]
+    #[ignore]
+    fn hz_live_npm_shim_versions() {
+        let npm = std::path::PathBuf::from(std::env::var_os("APPDATA").unwrap()).join("npm");
+        for name in ["claude.cmd", "pi.cmd", "dsh.cmd"] {
+            let path = npm.join(name);
+            let started = std::time::Instant::now();
+            let version = binary_version(&path);
+            eprintln!("{name}: {version:?} in {:?}", started.elapsed());
+        }
+    }
+
     #[cfg(windows)]
     #[test]
     fn npm_shim_versions_are_probed_through_native_launcher() {
